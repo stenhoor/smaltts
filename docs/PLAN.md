@@ -1,6 +1,6 @@
 # smaltts: plan (draft for the owner's interview)
 
-- **Status:** draft, before the design interview. Open questions are in [section 9](#9-open-questions).
+- **Status:** draft, before the design interview. Working defaults are in [section 9](#9-working-defaults-interview-round-1-2026-11-06), open questions in [section 10](#10-open-questions).
 - **Date:** 2026-11-06
 - **Builds on:** smaltdb [ADR 0014](https://github.com/stenhoor/smaltdb/blob/main/docs/adr/0014-shared-plan-layer.md)
   (shared plan layer) and [ADR 0015](https://github.com/stenhoor/smaltdb/blob/main/docs/adr/0015-smaltql.md)
@@ -198,7 +198,17 @@ await db.run(remove(users).where((u) => u.active.not()));
 | `expectPlan(tree)` helpers | test assertions: `usesIndex('users_email')`, `noFullScan('orders')`, `estimatedRowsBelow(n)` (Q9) |
 | `db.compare(q1, q2)` | estimates of two queries side by side |
 
-## 9. Open questions
+## 9. Working defaults (interview round 1, 2026-11-06)
+
+The owner gave no preference on Q1–Q3 and Q7; these defaults stand until revisited:
+
+- **Q1:** smaltts is fully independent of smaltdf (own IR, binder and expressions; shares only the engine).
+- **Q2:** immutable method chains with callbacks over typed row proxies (section 5).
+- **Q3:** TypeScript-native meaning where the engine allows it (`div` is float division, real booleans, strict
+  equality without affinity coercion, three-valued NULL); operations the engine lacks are proposed to smaltdb.
+- **Q7:** TypeScript definitions are the source of truth, with `db.diff()` / `db.migrate()`.
+
+## 10. Open questions
 
 | ID | Question | Why it matters |
 |---|---|---|
