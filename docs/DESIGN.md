@@ -1,7 +1,8 @@
 # smaltts design
 
-- **Status:** proposed, for the owner's review. A prototype of sections 4–9 is in `src/` and runs against the
-  in-process smaltdb engine (`test/smaltts.test.ts`).
+- **Status:** proposed, for the owner's review. Decisions from the design interview are recorded in section 14. A
+  prototype of sections 4–9 is in `src/` and runs against the in-process smaltdb engine (`test/smaltts.test.ts`); it
+  predates the view decisions of section 8 (see section 13).
 - **Date:** 2026-11-06
 - **Builds on:** smaltdb [ADR 0014](https://github.com/stenhoor/smaltdb/blob/main/docs/adr/0014-shared-plan-layer.md)
   (the shared plan layer) and [ADR 0015](https://github.com/stenhoor/smaltdb/blob/main/docs/adr/0015-smaltql.md)
@@ -147,9 +148,15 @@ await db.apply(changes, { allowDataLoss: 'possible' });   // runs, in one transa
   | `dropColumn` | rewrite | certain | `alterTable` |
   | `createIndex` | build | none | `createIndex` |
   | `dropIndex` | metadata | none | `drop` |
-  | `rebuildTable`: a change the engine cannot make in place (type, nullability, collation, default, keys, storage, column order) | rewrite | none / possible / certain | `createTable` (new), `append` plan (copy by name), `drop` (old), `alterTable` (rename), `createIndex`… |
+  | `rebuildTable`: a change the engine cannot make in place (type, nullability, collation, default, keys, storage, column order) | rewrite | none / possible / certain (below) | `createTable` (new), `append` plan (copy by name), `drop` (old), `alterTable` (rename), `createIndex`… |
   | `dropTable` (with `prune`) | metadata | certain | `drop` |
 
+- **Data loss is decided by types, never by data.** A rebuild loses nothing when every column's type change is
+  lossless by the conversion table of section 8.3; it may lose data otherwise, whatever the rows hold today; it
+  certainly loses data when it drops columns. `diff` and `apply` never scan rows to classify a change, so a change set
+  gets the same verdict in CI and in every database it is applied to. If a policy allows a lossy rebuild and a row
+  cannot be converted, the copy fails inside `apply`'s transaction and nothing changes. A rebuild that wants a lossy
+  conversion on purpose names it in the change (a rounding or parsing function) instead.
 - **`apply(changes, policy)`** refuses errors, any step above `policy.allowDataLoss` (default `none`) and any step
   above `policy.maxImpact`. It runs every statement of every step in **one transaction** (smaltdb's DDL is
   transactional: a failed step leaves the database as it was) and records the change set in `smaltts_history`
@@ -192,20 +199,100 @@ truncates. Columns collide only on joins, where `prefix` renames the right side.
 **Compiling** resolves names against the catalog's specs and produces the engine's positional plan; the engine
 validates it as it validates every plan. Named parameters become positional ones in order of first use.
 
+**Scope** (owner's decision): DDL comes first, but the relational builder covers what pipelines need. Beyond the
+operations above, v1 adds:
+
+| Group | Operations | Engine plan |
+|---|---|---|
+| Windows | `rank`, `rowNumber`, `denseRank`, `lag`, `lead`, `firstValue`, aggregates over frames: dedupe, latest-row and slowly changing dimensions | `window` |
+| Set operations, subqueries | `intersect`, `except`; `exists`, `in` and scalar subqueries, correlated by closing over outer columns | `setop`, `subquery`, `inSubquery` |
+| Recursion | `recursive(seed, (self) => step)` for trees and graphs | `iterate`, `working` |
+| Merge and incremental loads | a merge load (insert, update or delete per match) and loads from captured changes | `append` with `upserts`, `update`, `delete`; change capture needs the engine (E8) |
+
 ## 8. Views and materialized views
 
 ```ts
+// A reflecting view (the default): its columns follow the tables it reads.
 await db.createView('big_orders', scan(orders).filter((o) => o.total.gt(100)));
-await db.createView('order_totals', byCustomer, { materialized: true, storage: 'columnar' });
+// An interface view: its columns are declared, and are a contract.
+await db.createView('order_totals', byCustomer, { columns: ['customerId', 'total'], materialized: true, storage: 'columnar' });
+await db.createView('daily', byDay, { columns: true });   // declare the relation's current columns as the interface
 await db.refresh('order_totals', { concurrently: true });
-await db.rows(scan('order_totals'));
 ```
 
 A view's source is its relation's JSON, in the language `smaltts`. The engine binds a materialized view through
 smaltts when it fills it; a plain view is read by smaltts by inlining its relation (plans have no view reference
 yet: E3). When ALTER TABLE renames a column, the engine asks smaltts to edit every smaltts source that refers to it.
-**A view's columns are its interface**: a rename underneath changes what the view reads, not the names it gives, so
-the pipeline steps downstream keep working (smaltql, following SQLite, changes the output name instead).
+
+### 8.1 Two purposes: reflecting and interface views
+
+A view has one of two purposes, and declares which:
+
+| | Reflecting view (the default) | Interface view |
+|---|---|---|
+| Declared by | nothing | a **column list**: `columns: ['a', 'b']`, or `columns: true` for the relation's current columns |
+| Its columns | follow the tables it reads | are a contract: names, order and types |
+| A column it reads is renamed | a column it passes through takes the new name; columns it names itself keep their names | the view reads the new name; its output does not change |
+| A column is added to a table it reads in full | the view gains the column | the view does not change |
+| A type changes underneath | the view's column takes the new type | allowed only by a lossless conversion (8.3), which the view applies; otherwise breaking |
+| A column it reads is dropped | breaking | breaking |
+| Suits | staging, internal and convenience views | views other tools and pipeline steps read; published datasets |
+
+**The column list is the declaration, in every language.** It is standard SQL (`CREATE VIEW daily(day, total) AS …`,
+as in PostgreSQL and SQLite), smaltql already parses it for views and materialized views, and the engine already
+stores it (`createView.columns`) and checks its length. A view declared with a column list in smaltql and one
+declared in smaltts are the same engine object with the same behaviour: no new SQL syntax and no dialect change
+(smaltdb ADR 0015 §8). smaltql's views already behave this way: a rename rewrites the query's references, never the
+column list. A smaltts view without a column list follows the table, as smaltql's does.
+
+### 8.2 What protects an interface
+
+Checked against smaltdb `0b36f33`, whichever language issues the DDL (smaltql's DDL reaches the engine as the same
+schema operations):
+
+| DDL | What happens today | Interface |
+|---|---|---|
+| Rename a column a view reads | allowed; the view's source is edited | holds |
+| Drop a column a view reads | refused by the engine: after every ALTER it binds each view that worked before, through the view's language, and refuses the ALTER if one fails | holds |
+| Drop a table a view reads | allowed; the view fails when read | lost |
+| Drop and recreate a table with other types | allowed; the view silently gives the new types | lost |
+| Drop or replace the view | allowed | lost |
+
+Names and order hold today. Types, and protection against drops and recreation, need the engine (E10): a contract
+that only smaltts checked would be a convention that any SQL session could break.
+
+### 8.3 Type changes: decided by types, never by data
+
+A type change that reaches a view's output through an interface column is breaking unless it converts losslessly to
+the declared type. "Lossless" is a property of the two types alone: the conversion must be exact for every value the
+new type can hold. smaltts never classifies a change by the values a column holds today, and never validates rows
+while reading: a conversion a view applies is total, so a read never fails on a row.
+
+| New underlying type → declared type | Result |
+|---|---|
+| the same type | unchanged |
+| INTEGER → NUMERIC, REAL → NUMERIC | lossless: the view converts |
+| INTEGER → TEXT, REAL → TEXT | lossless (exact, round-trip text): the view converts |
+| TEXT → BLOB | lossless (UTF-8 bytes): the view converts |
+| any type → ANY | lossless |
+| BOOL → INTEGER, DATE → TIMESTAMP (when the engine has these types, E7) | lossless: the view converts |
+| NOT NULL → nullable declared | lossless |
+| INTEGER → REAL | breaking: not exact beyond ±2^53 |
+| REAL → INTEGER, TEXT → INTEGER or REAL, BLOB → TEXT, TIMESTAMP → DATE, INTEGER → BOOL | breaking |
+| nullable → NOT NULL declared | breaking |
+
+A breaking change is an error in the change set. `apply` refuses it unless the same change set changes the view (its
+declared columns or types), and then lists the view's dependents as affected. The same table classifies data loss in
+table rebuilds (section 6). The table and the conversions belong to the engine (E10), so smaltql and smaltts give the
+same verdicts and apply the same conversions.
+
+### 8.4 Materialized views
+
+A materialized view stores its rows in columns fixed when it is created: a refresh after its relation's shape
+changes fails (`the query now returns 5 columns, the view has 4`). So when a change set changes a reflecting
+materialized view's shape, it adds a step that recreates and refills it (impact rewrite). An interface materialized
+view's shape cannot change without a change to its declaration. A refresh that adapts the stored columns itself is
+an engine proposal (E9).
 
 ## 9. Loads and writes
 
@@ -260,7 +347,9 @@ issue; none is worked around with a second implementation in smaltts.
 | **E5** | schema op | **Impact from the engine**: a dry run of a schema operation that reports whether it rewrites the table, how many rows it touches and what depends on the object (`pg_depend`, MySQL's ALGORITHM). | Classification from the engine rather than from smaltts's rules; dependency-ordered steps. |
 | **E6** | plan format | **A columnar `values` source** (already planned in ADR 0015 §9) and a bulk append path. | Fast loads of large JavaScript batches. |
 | **E7** | plan format | **Behaviour-named functions** (ADR 0015 step 2): float division, a boolean type, dates and times. | `div` without a cast; booleans in specs and rows. |
-| **E8** | engine | **Change capture** (the roadmap's sync groundwork) and **resumable rebuilds** that do not hold the writer for a whole copy. | Incremental loads in smaltfl; rebuilding large OPFS tables. |
+| **E8** | engine | **Change capture** (the roadmap's sync groundwork) and **resumable rebuilds** that do not hold the writer for a whole copy. | Incremental loads and merge loads in smaltfl; later, rebuilding large OPFS tables (v1 accepts blocking rebuilds). |
+| **E9** | engine | **Refresh that adapts a materialized view's stored columns** when its query's shape changes, instead of failing. | Reflecting materialized views without a recreate step. |
+| **E10** | engine | **View interfaces in the engine**: (1) the declared column list carries types, captured from the bound query when the view is created; (2) a published **conversion table** (each pair of types: lossless or breaking, and the conversion), used when binding a view and by languages to classify changes; (3) **dependents checked after every DDL**, not only ALTER: dropping or recreating a table under an interface view is refused unless the statement asks to cascade, and dropping or replacing an interface view itself needs an explicit option. | Interfaces that hold whichever language issues the DDL (section 8.2); identical verdicts in smaltql and smaltts. |
 
 ## 12. Relationships
 
@@ -278,21 +367,44 @@ catalog round-trip, diff with renames, rebuilds and policies, change-set JSON an
 relations with joins, aggregates, parameters and typed rows, plain and materialized views, ALTER source editing,
 explain with measurements, compile-time name checks.
 
+The prototype predates section 8: it keeps a view's names on a rename (it should follow the table unless the view
+declares a column list), has no column lists, and classifies every type change in a rebuild as possible data loss
+(it should use the conversion table of 8.3). These are the next prototype changes.
+
 Not yet: the worker client (written, untested: needs a browser test), windows, recursion, subqueries, foreign-key
 comparison (E1), plugin descriptors with typed methods, external tables and connections as specs, a job API for
 long rebuilds, and a published package (the name and smaltdb pin follow the sibling repositories).
 
-## 14. Open questions for the owner
+## 14. Decisions and open questions
 
-1. **Migrations on disk**: desired state only (diff against the live database each time), or also a versioned
-   folder of change-set JSON files in the application's repository (as Atlas's versioned mode)?
-2. **Rebuilds of large tables**: is a blocking rebuild in one transaction acceptable for v1, or must resumable
-   rebuilds (E8) come first?
-3. **View column names on rename**: keep a view's names stable (this design) or follow the table (smaltql)?
-4. **Relation scope**: how far should the relational builder go while DDL comes first: windows, recursion,
-   subqueries, set operations beyond `union`?
-5. **Plugins**: typed descriptors (a plugin ships a smaltts module with typed methods and table functions), or the
-   generic `plugin(name).call()` only?
-6. **Engine proposals**: open F1 and E1–E8 as smaltdb issues now, and in which order?
-7. **Types**: wait for the engine's boolean and date types (E7), or add smaltts logical types (a boolean stored as
-   `INTEGER` with a check) before then?
+### Decided (design interview, 2026-11-06)
+
+1. **smaltfl is built on smaltts**: smaltts is the foundation and stays free of orchestration (section 12).
+2. **Schemas come from code and from run time equally**: both are first-class and produce the same specs (section 5).
+3. **Engine changes may be proposed** where the design needs them (section 11).
+4. **Blocking rebuilds are acceptable for v1**: one transaction holds the writer for the copy. Resumable rebuilds
+   (E8) come later.
+5. **Views have two purposes**: reflecting by default; interface when declared with a column list, in every language
+   (section 8.1).
+6. **Type changes are decided by types, never by data**: breaking unless lossless for every value; no row-level
+   validation and no errors while reading (section 8.3).
+7. **Interfaces are enforced by the engine** (E10), so that DDL from smaltql cannot break what smaltts declared. No
+   new SQL syntax: the column list is standard SQL that smaltql already parses.
+8. **The relational builder's scope** includes windows, set operations and subqueries, recursion, and merge and
+   incremental loads (section 7).
+
+### Open
+
+1. **Migrations on disk.** How a release reaches many databases:
+   - *live diff only*: each database diffs the desired schema against itself when it opens and applies under a
+     policy; the only record is `smaltts_history` in each database;
+   - *live diff and saved change sets*: CI saves each reviewed change set as a JSON file in the application's
+     repository, and databases replay the files they have not applied, in order, so every database runs exactly the
+     reviewed steps (checksums catch edited files); live diff stays for development and pipelines;
+   - *saved change sets only*: live diff only writes new files and detects drift.
+2. **Plugins**: typed descriptors (a plugin ships a smaltts module with typed methods and table functions), or the
+   generic `plugin(name).call()` only? Should connections and external tables be specs that are diffed and applied?
+3. **Engine proposals**: open F1, E1–E10 as smaltdb issues now, and in which order? (E10 first for views; F1 is a bug.)
+4. **Boolean and date types**: wait for the engine's (E7), or add smaltts logical types before then?
+5. **Typed column lists in SQL**: E10 captures an interface's types when the view is created. Should smaltql also
+   accept declared types in the list (`CREATE VIEW v(a INTEGER, b REAL) AS …`), a smaltql addition?
