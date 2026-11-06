@@ -113,6 +113,55 @@ Column builders (`int()`, `real()`, `numeric()`, `text()`, `blob()`, `any()`) an
 `.primaryKey()`, `.unique()`, `.indexed()`, `.collate()`, `.default()`, `.renamedFrom()`) only produce spec data.
 `table()` uses a `const` type parameter, so no `as const` is needed.
 
+### 5.1 Boolean, date and time types
+
+smaltdb has no boolean or date and time types today: a column declared `BOOLEAN`, `DATE` or `TIMESTAMP` is stored as
+`NUMERIC` (SQLite's rules), booleans read as `1` / `0`, and dates are whatever was written (ISO text, a Julian day,
+epoch seconds). smaltdb ADR 0015 §9 plans the types in the engine.
+
+**Engine first** (owner's decision): smaltts adds no interim encodings of its own (no boolean as an INTEGER with a
+CHECK, no date as text with a codec). `bool()`, `date()`, `time()`, `datetime()`, `timestamp()` and `interval()`
+arrive when the engine has the types (E7). Interim encodings would be invisible to the engine's conversion table and
+to interfaces (section 8), would differ from what smaltql and smaltdf see, and would each need a migration later. Real
+types are also faster: dates compare, sort and index as integers instead of text, columnar zone maps can skip
+segments on date ranges, booleans can be bit-packed, and Parquet and Arrow values map one-to-one.
+
+**The set** (owner's decision: the full set, designed together):
+
+| Type | Value | Stored as |
+|---|---|---|
+| `BOOLEAN` | true, false | 1 byte (1 bit in columnar segments) |
+| `DATE` | a calendar day | days since 1970-01-01 |
+| `TIME(p)` | a time of day, no date | units of the precision since midnight |
+| `DATETIME(p)` | a wall-clock date and time with no zone (CSV exports, local schedules) | units since 1970-01-01T00:00 |
+| `TIMESTAMP(p)` | an instant, in UTC | units since the epoch, UTC |
+| `INTERVAL(p)` | a duration: months, days and sub-day units kept apart (PostgreSQL's model), since a month is not a fixed number of days and a day is not always 24 hours | three integers |
+
+**Precision follows JavaScript by default** (owner's decision). `p` is 3 (milliseconds, the default) or 6
+(microseconds). A JavaScript `Date` holds milliseconds, so a default `TIMESTAMP` holds exactly what a `Date` holds and
+round-trips exactly. Microseconds exist only where asked for: `timestamp({ precision: 6 })`, or an import of
+microsecond data (Parquet, Arrow and PostgreSQL exports use them), which stays lossless in a `(6)` column.
+Nanoseconds are out of scope until Temporal is in every minimum browser. Microseconds since the epoch stay below
+2^53 until about 2255, so even `(6)` values are plain numbers for realistic dates, not `bigint`s.
+
+**JavaScript values** (owner's decision): `TIMESTAMP` and `DATETIME` read as `Date` by default (`DATETIME` as a
+`Date` at that wall-clock time in UTC, which is not an instant), `DATE` as a `Date` at midnight UTC, `BOOLEAN` as
+`boolean`. A per-query option reads exact values instead (epoch units as numbers, or ISO-8601 text). Reading a `(6)`
+column as `Date` drops the microseconds, so it needs that option to say so explicitly: it is never a silent default.
+
+**Time zones** appear only in conversion functions (`TIMESTAMP` to and from `DATETIME` in a named zone), never in
+stored values. The engine takes zone rules from the host (`Intl.DateTimeFormat`), so it ships no zone database and
+conversions are as current as the browser or Node version. Local and instant values never mix implicitly: comparing a
+`DATETIME` with a `TIMESTAMP` needs an explicit conversion that names the zone.
+
+**Intervals compare** by PostgreSQL's rule (a month counts as 30 days, a day as 24 hours), documented as an
+approximation; adding an interval to a date or timestamp uses the exact calendar.
+
+**In SQL** (owner's decision): smaltql gives `BOOLEAN`, `DATE`, `TIME`, `DATETIME`, `TIMESTAMP` and `INTERVAL` their
+new meaning under a **versioned dialect**: new databases use it, existing databases keep today's `NUMERIC` meaning
+until they opt in (smaltdb ADR 0015 §8 requires a dialect version for a change in what working SQL means). smaltql's
+ADR defines how an old-dialect column reads. smaltts's catalog must report a column's true type, which needs E1.
+
 ## 6. Catalog, diff, change sets and apply
 
 ```ts
@@ -275,10 +324,15 @@ while reading: a conversion a view applies is total, so a read never fails on a 
 | INTEGER → TEXT, REAL → TEXT | lossless (exact, round-trip text): the view converts |
 | TEXT → BLOB | lossless (UTF-8 bytes): the view converts |
 | any type → ANY | lossless |
-| BOOL → INTEGER, DATE → TIMESTAMP (when the engine has these types, E7) | lossless: the view converts |
+| BOOLEAN → INTEGER (when the engine has the types of section 5.1) | lossless: the view converts |
+| DATE → TIMESTAMP(p), DATE → DATETIME(p) (at midnight) | lossless: the view converts |
+| TIMESTAMP(3) → TIMESTAMP(6), and likewise for TIME, DATETIME and INTERVAL | lossless: the view converts |
+| BOOLEAN, DATE, TIME, DATETIME, TIMESTAMP → TEXT (ISO-8601) | lossless: the view converts |
 | NOT NULL → nullable declared | lossless |
 | INTEGER → REAL | breaking: not exact beyond ±2^53 |
-| REAL → INTEGER, TEXT → INTEGER or REAL, BLOB → TEXT, TIMESTAMP → DATE, INTEGER → BOOL | breaking |
+| REAL → INTEGER, TEXT → INTEGER or REAL, BLOB → TEXT, INTEGER → BOOLEAN | breaking |
+| TIMESTAMP → DATE, TIMESTAMP(6) → TIMESTAMP(3) (and likewise for TIME, DATETIME, INTERVAL) | breaking |
+| DATETIME ↔ TIMESTAMP (needs a zone), TEXT or INTEGER → any date or time type (a format or unit is a guess) | breaking |
 | nullable → NOT NULL declared | breaking |
 
 A breaking change is an error in the change set. `apply` refuses it unless the same change set changes the view (its
@@ -346,7 +400,7 @@ issue; none is worked around with a second implementation in smaltts.
 | **E4** | schema op | **More in-place changes**, or a `rebuildTable` operation the engine runs itself: alter a column's type, nullability, default, collation; add or drop a key; change storage. | Fewer and cheaper rebuilds; the engine can keep statistics and dependent views. |
 | **E5** | schema op | **Impact from the engine**: a dry run of a schema operation that reports whether it rewrites the table, how many rows it touches and what depends on the object (`pg_depend`, MySQL's ALGORITHM). | Classification from the engine rather than from smaltts's rules; dependency-ordered steps. |
 | **E6** | plan format | **A columnar `values` source** (already planned in ADR 0015 §9) and a bulk append path. | Fast loads of large JavaScript batches. |
-| **E7** | plan format | **Behaviour-named functions** (ADR 0015 step 2): float division, a boolean type, dates and times. | `div` without a cast; booleans in specs and rows. |
+| **E7** | plan format | **Boolean, date and time types** as section 5.1 specifies them (`BOOLEAN`, `DATE`, `TIME(p)`, `DATETIME(p)`, `TIMESTAMP(p)`, `INTERVAL(p)`, precision 3 by default or 6): plan type tags, value codec, key encoding, columnar segments and zone maps, typed date and time functions, casts and conversion-table entries. One ADR, delivered in stages (proposed: `BOOLEAN`, `DATE`, `TIMESTAMP` first; then `TIME`, `DATETIME`; then `INTERVAL`). Also **behaviour-named functions** (ADR 0015 step 2), such as float division. | `bool()`, `date()`, `timestamp()` in specs and rows; `div` without a cast; lossless Parquet imports. |
 | **E8** | engine | **Change capture** (the roadmap's sync groundwork) and **resumable rebuilds** that do not hold the writer for a whole copy. | Incremental loads and merge loads in smaltfl; later, rebuilding large OPFS tables (v1 accepts blocking rebuilds). |
 | **E9** | engine | **Refresh that adapts a materialized view's stored columns** when its query's shape changes, instead of failing. | Reflecting materialized views without a recreate step. |
 | **E10** | engine | **View interfaces in the engine**: (1) the declared column list carries types, captured from the bound query when the view is created; (2) a published **conversion table** (each pair of types: lossless or breaking, and the conversion), used when binding a view and by languages to classify changes; (3) **dependents checked after every DDL**, not only ALTER: dropping or recreating a table under an interface view is refused unless the statement asks to cascade, and dropping or replacing an interface view itself needs an explicit option. | Interfaces that hold whichever language issues the DDL (section 8.2); identical verdicts in smaltql and smaltts. |
@@ -392,6 +446,13 @@ long rebuilds, and a published package (the name and smaltdb pin follow the sibl
    new SQL syntax: the column list is standard SQL that smaltql already parses.
 8. **The relational builder's scope** includes windows, set operations and subqueries, recursion, and merge and
    incremental loads (section 7).
+9. **Boolean, date and time types come from the engine** (E7): no interim encodings in smaltts (section 5.1).
+10. **The full set of date and time types**: `DATE`, `TIME`, `DATETIME` (local), `TIMESTAMP` (UTC instant),
+    `INTERVAL`, plus `BOOLEAN`.
+11. **Precision is part of the type, milliseconds by default**: `(3)` matches JavaScript's `Date` exactly; `(6)` only
+    where asked for. No nanoseconds for now.
+12. **JavaScript values**: `Date` by default, an option for exact values; dropping microseconds is always explicit.
+13. **In SQL, a versioned dialect** gives `BOOLEAN` and the date and time names their new meaning in new databases.
 
 ### Open
 
@@ -405,6 +466,6 @@ long rebuilds, and a published package (the name and smaltdb pin follow the sibl
 2. **Plugins**: typed descriptors (a plugin ships a smaltts module with typed methods and table functions), or the
    generic `plugin(name).call()` only? Should connections and external tables be specs that are diffed and applied?
 3. **Engine proposals**: open F1, E1–E10 as smaltdb issues now, and in which order? (E10 first for views; F1 is a bug.)
-4. **Boolean and date types**: wait for the engine's (E7), or add smaltts logical types before then?
+4. **Delivery of E7**: one engine ADR for all six types, delivered in stages (proposed above), or all at once?
 5. **Typed column lists in SQL**: E10 captures an interface's types when the view is created. Should smaltql also
    accept declared types in the list (`CREATE VIEW v(a INTEGER, b REAL) AS …`), a smaltql addition?
