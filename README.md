@@ -1,45 +1,23 @@
-# smaltts
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/stenhoor/smalt-brand/main/logos/smaltts/lockup-on-dark.svg">
+    <img alt="smaltts" src="https://raw.githubusercontent.com/stenhoor/smalt-brand/main/logos/smaltts/lockup.svg" width="320">
+  </picture>
+</h1>
 
-**The database-first, plan-first TypeScript API for [smaltdb](https://github.com/stenhoor/smaltdb).**
+<a href="https://smaltworks.dev/stability"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/stenhoor/smalt-brand/main/badges/work-in-progress-on-dark.svg"><img alt="Work in progress. Come build with us." src="https://raw.githubusercontent.com/stenhoor/smalt-brand/main/badges/work-in-progress.svg" height="56"></picture></a>
 
-smaltts is for the people who build toolchains and data pipelines on smaltdb: code that creates, reshapes, indexes,
-fills and checks databases. Schemas are values you can write in TypeScript or build at run time, read back from a
-database, compare and apply as reviewable change sets. Plans are values too: relations by column name, compiled to
-the engine's plan format. There is no SQL in it and no dataframes: SQL is [smaltql](https://github.com/stenhoor/smaltql),
-dataframes are [smaltdf](https://github.com/stenhoor/smaltdf), and pipelines will be
-[smaltfl](https://github.com/stenhoor/smaltfl), built on smaltts.
+**Small. Alternative. Typed.** smaltdb, straight from TypeScript.
 
-> **Status: design and prototype.** Read [docs/DESIGN.md](docs/DESIGN.md) (the design, engine findings and open
-> questions) and [docs/research](docs/research/README.md) (the surveys behind it). Not on npm.
+[smaltworks.dev](https://smaltworks.dev/products/smaltts)
 
-```ts
-import { Database } from 'smaltdb/engine';
-import { attach, registerSmaltts, table, int, real, text, scan, agg, describe } from '@smaltworks/smaltts';
+smaltts will be a thin, typed TypeScript API for [smaltdb](https://smaltdb.dev), for applications and tools that want
+to work with the engine directly, without a query language or dataframes in between. It sits at the language layer,
+beside [smaltql](https://stenhoor.github.io/smaltql/) (SQL) and [smaltdf](https://stenhoor.github.io/smaltdf/)
+(dataframes), and builds plans for the same engine.
 
-registerSmaltts();
-const db = attach(Database.openMemory());
+**Status:** planned. There is no code yet.
 
-const orders = table('orders', { id: int().primaryKey(), customerId: int().notNull().indexed(), total: real().notNull() });
+<a href="https://smaltworks.dev"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/stenhoor/smalt-brand/main/badges/a-smaltworks-project-on-dark.svg"><img alt="A smaltworks project" src="https://raw.githubusercontent.com/stenhoor/smalt-brand/main/badges/a-smaltworks-project.svg" height="28"></picture></a>
 
-const changes = await db.diff({ tables: [orders] });   // what it would take: data, nothing runs
-console.log(describe(changes));                       // steps, impact, data loss
-await db.apply(changes);                              // one transaction, recorded with its checksum
-
-await db.load(orders, [{ customerId: 1, total: 10 }, { customerId: 1, total: 30 }]);
-const totals = scan(orders).aggregate((o) => ({ customerId: o.customerId }), (o) => ({ total: agg.sum(o.total) }));
-await db.createView('order_totals', totals, { materialized: true, storage: 'columnar' });
-console.log(String(await db.explain(totals, { analyze: true })));
-```
-
-## Development
-
-Requires Node 20+.
-
-```bash
-npm ci && npm run deps   # dependencies, then the smaltdb build pinned in packed.json
-npm run check            # typecheck + tests
-```
-
-## License
-
-[MIT](LICENSE)
+MIT License.
