@@ -9,7 +9,7 @@
 
 **Small. Alternative. Typed.** smaltdb, straight from TypeScript.
 
-[smaltworks.dev](https://smaltworks.dev/products/smaltts)
+[Documentation](https://stenhoor.github.io/smaltts/) · [smaltworks.dev](https://smaltworks.dev/products/smaltts)
 
 smaltts will be a thin, typed TypeScript API for [smaltdb](https://smaltdb.dev), for applications and tools that want
 to work with the engine directly, without a query language or dataframes in between. It sits at the language layer,

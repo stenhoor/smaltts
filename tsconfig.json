@@ -18,7 +18,8 @@
       "smaltdb/plan": ["./node_modules/smaltdb/src/engine/plan/portable.ts"],
       "smaltdb/language": ["./node_modules/smaltdb/src/engine/language-support.ts"],
       "smaltdb/worker-runtime": ["./node_modules/smaltdb/src/engine/worker-runtime.ts"],
-      "smaltdb-src/*": ["./node_modules/smaltdb/src/*"]
+      "smaltdb-src/*": ["./node_modules/smaltdb/src/*"],
+      "@smaltworks/smaltts": ["./src/index.ts"]
     }
   },
   "include": ["src", "test"]

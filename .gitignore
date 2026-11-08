@@ -3,3 +3,6 @@
 coverage/
 dist/
 node_modules/
+test/.reference/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
