@@ -24,3 +24,7 @@ copy here: lines and roles change, and a copy taken before the change is out of 
 - Read review comments on your PR and answer them with commits that say what they address.
 - When a PR depends on another repo's PR, add a line such as `Depends on: stenhoor/smaltdb#12`.
 - Issues: follow smaltdb's `CLAUDE.md` ("Issues").
+- **Ask before adding outside code.** Ask the owner, and wait for a yes, before adding a package (a dependency of any
+  kind, or a pin in `packed.json`), copying or bundling in someone else's code, or loading code from another site at run
+  time (a CDN such as jsDelivr). Say what it is, its licence and size, what it's for, and why our own code can't do it.
+  Outside code that a feature needs goes in a plugin, so it is named and optional, never in core.
