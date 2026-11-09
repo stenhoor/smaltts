@@ -82,6 +82,7 @@ export default defineConfig({
         text: 'Design',
         items: [
           { text: 'Design', link: '/DESIGN' },
+          { text: 'Decisions (ADRs)', link: '/adr/README' },
           { text: 'Milestones', link: '/MILESTONES' },
           { text: 'Research', link: '/research/README' },
         ],
