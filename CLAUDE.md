@@ -4,7 +4,8 @@ smaltts is a thin, typed TypeScript API for [smaltdb](https://smaltdb.dev), at t
 and smaltdf: typed plan and schema operations, with structured flows, for applications and layers that want neither
 SQL nor dataframes. The design, its milestones and the research behind it are in [docs/DESIGN.md](docs/DESIGN.md),
 [docs/MILESTONES.md](docs/MILESTONES.md) and [docs/research](docs/research/README.md); a prototype is in `src/`. The
-language's decisions are recorded in [docs/adr](docs/adr/README.md): a significant decision gets a new ADR.
+language's decisions are recorded in [docs/adr](docs/adr/README.md): a significant decision gets a new ADR,
+numbered in the one sequence all smalt repositories share (after smaltdb's 0001–0022).
 Several Claude Code sessions work on the smalt repos in parallel and cannot see each other: this file is the shared
 starting point, and its working rules match smaltdb's `CLAUDE.md`.
 

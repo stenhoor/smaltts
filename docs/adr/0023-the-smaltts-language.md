@@ -1,4 +1,4 @@
-# ADR 0001: smaltts, a thin typed language for smaltdb
+# ADR 0023: smaltts, a thin typed language for smaltdb
 
 - **Status:** proposed (for the owner's review)
 - **Date:** 2026-11-09
@@ -113,6 +113,7 @@ Taken in the design interview of 2026-11-06 and in later sessions:
 10. **smaltts is thin** (smalt-brand, 2026-11-08).
 11. **VitePress** for the docs site, a dev dependency (2026-11-08).
 12. **Merges go through pull requests** (2026-11-08).
+13. **One numbering for all smalt ADRs:** this record is 0023, after smaltdb's 0022 (2026-11-09).
 
 ## Open points for the owner
 
