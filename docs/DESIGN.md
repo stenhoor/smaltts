@@ -417,9 +417,9 @@ Status against smaltdb `9cd575c` (2026-11-08). Most of the first round is in the
 | # | What | Status |
 |---|---|---|
 | **F1** | Renames failed once a materialized view existed (the engine's own tables had SQL text) | **fixed** (ADR 0017 §4) |
-| **E1** | Catalog as definitions | **mostly done**: `db.catalog` / `catalog()` (ADR 0016 §7) give plan, storage and declared types, collations, keys, indexes, storage and source. **Still missing:** foreign keys, CHECKs and default values (only `hasDefault`); smaltts reads those three from `information_schema` meanwhile, and would read them from the catalog once it lists them. A small smaltdb PR. |
-| **E11** | Expression texts of definitions without source text follow renames | **open**: a table defined without source text keeps its CHECK and default texts as given, and an in-place `renameColumn` cannot edit them (no language owns them), so smaltts plans a rebuild for a rename that a CHECK or computed default reads. The engine could keep such expressions by column position, or let the defining language register an editor without owning the table. |
-| **E2** | Structured EXPLAIN with costs | **open**: `plan` mode gives a detail string per node and no estimates; `analyze` gives estimated and actual rows, loops and time, no cost. |
+| **E1** | Catalog as definitions (remainder: stenhoor/smaltdb#189) | **mostly done**: `db.catalog` / `catalog()` (ADR 0016 §7) give plan, storage and declared types, collations, keys, indexes, storage and source. **Still missing:** foreign keys, CHECKs and default values (only `hasDefault`); smaltts reads those three from `information_schema` meanwhile, and would read them from the catalog once it lists them. A small smaltdb PR. |
+| **E11** | Expression texts of definitions without source text follow renames (stenhoor/smaltdb#190) | **open**: a table defined without source text keeps its CHECK and default texts as given, and an in-place `renameColumn` cannot edit them (no language owns them), so smaltts plans a rebuild for a rename that a CHECK or computed default reads. The engine could keep such expressions by column position, or let the defining language register an editor without owning the table. |
+| **E2** | Structured EXPLAIN with costs (stenhoor/smaltdb#187) | **open**: `plan` mode gives a detail string per node and no estimates; `analyze` gives estimated and actual rows, loops and time, no cost. |
 | **E3** | A view reference in plans | **done**: `scan` names a view, bound by its language (ADR 0016 §6). |
 | **E4** | More in-place changes, or an engine `rebuildTable` | open |
 | **E5** | Impact and dependents from the engine (dry run of a schema operation) | open |
@@ -427,10 +427,10 @@ Status against smaltdb `9cd575c` (2026-11-08). Most of the first round is in the
 | **E7** | Types and behaviour-named operations | **done**: `bool` and NaN (0018), dates and times (0019), lists and structs (0020), behaviour names (0016 §1). |
 | **E8** | Change capture; resumable rebuilds | open; the roadmap's sync groundwork (before the sync plugin) |
 | **E9** | A materialized-view refresh that adapts its stored columns | open |
-| **F2** | bug | Values from columns read text in the result format for `date`, `time` and `datetime` but not for `duration` (ADR 0019 §5: text in the result format parses). | Writing a `duration` from its text. Pinned by a `test.fails` (`test/engine-findings.test.ts`). |
-| **F4** | gap | ALTER TABLE cannot rename a columnar table (`not supported for columnar table … yet`). smaltts rebuilds and swap-loads columnar tables through a row-storage staging table (two copies) instead of renaming. | Rebuilds and swap loads of columnar tables. Pinned by a `test.fails`. |
-| **F3** | bug | A JavaScript `Date` in a `date` column of values is taken as a `datetime` (µs), so it stores a day millions of years away. smaltts gives a `date` column the ISO day text instead, an input form the engine documents. | `Date`s into `date` columns. Pinned by a `test.fails`. |
-| **E10** | View interfaces in the engine: typed column lists, the conversion table, dependents checked after every DDL (refusing drops and recreation under an interface unless cascaded) | open; the largest, and the one section 8 depends on |
+| **F2** | bug (stenhoor/smaltdb#191) | Values from columns read text in the result format for `date`, `time` and `datetime` but not for `duration` (ADR 0019 §5: text in the result format parses). | Writing a `duration` from its text. Pinned by a `test.fails` (`test/engine-findings.test.ts`). |
+| **F4** | gap (stenhoor/smaltdb#193) | ALTER TABLE cannot rename a columnar table (`not supported for columnar table … yet`). smaltts rebuilds and swap-loads columnar tables through a row-storage staging table (two copies) instead of renaming. | Rebuilds and swap loads of columnar tables. Pinned by a `test.fails`. |
+| **F3** | bug (stenhoor/smaltdb#192) | A JavaScript `Date` in a `date` column of values is taken as a `datetime` (µs), so it stores a day millions of years away. smaltts gives a `date` column the ISO day text instead, an input form the engine documents. | `Date`s into `date` columns. Pinned by a `test.fails`. |
+| **E10** | View interfaces in the engine (stenhoor/smaltdb#188): typed column lists, the conversion table, dependents checked after every DDL (refusing drops and recreation under an interface unless cascaded) | open; the largest, and the one section 8 depends on |
 
 The engine also gained what smaltts did not ask for and now uses: errors with an `origin` and structured fields,
 typed results and write counts, `streamPlan`, guaranteed order, and the operations of ADR 0016 §5 (pivot, unpivot,
@@ -503,17 +503,14 @@ Superseded by smaltdb ADR 0019 (accepted by the owner on 2026-11-07, after the 2
 part of the type, separate local and UTC types, `INTERVAL` with months, and a SQL dialect version. smaltts follows
 ADR 0019 (section 5.1).
 
+Decided after the interview (2026-11-10, ADR 0023 decisions 19–21): migrations on disk are live diff *and* saved
+change sets (gate A); the engine proposals are open as smaltdb issues (section 11); interfaces ship as names and order
+before E10 (gate B).
+
 ### Open
 
-1. **Migrations on disk.** How a release reaches many databases:
-   - *live diff only*: each database diffs the desired schema against itself when it opens and applies under a
-     policy; the only record is `smaltts_history` in each database;
-   - *live diff and saved change sets*: CI saves each reviewed change set as a JSON file in the application's
-     repository, and databases replay the files they have not applied, in order, so every database runs exactly the
-     reviewed steps (checksums catch edited files); live diff stays for development and pipelines;
-   - *saved change sets only*: live diff only writes new files and detects drift.
-2. **Plugins**: typed descriptors (a plugin ships a smaltts module with typed methods and table functions), or the
+1. **Plugins**: typed descriptors (a plugin ships a smaltts module with typed methods and table functions), or the
    generic `plugin(name).call()` only? Should connections and external tables be specs that are diffed and applied?
-3. **Engine proposals**: open F1, E1–E10 as smaltdb issues now, and in which order? (E10 first for views; F1 is a bug.)
-4. **Typed column lists in SQL**: E10 captures an interface's types when the view is created. Should smaltql also
+2. **Typed column lists in SQL**: E10 captures an interface's types when the view is created. Should smaltql also
    accept declared types in the list (`CREATE VIEW v(a INTEGER, b REAL) AS …`), a smaltql addition?
+3. **Flows and smaltfl** (gate C): what a flow holds and what smaltfl adds.

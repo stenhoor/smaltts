@@ -126,19 +126,21 @@ Taken in the design interview of 2026-11-06 and in later sessions:
 18. **`Date` drops a `datetime`'s µs:** smaltts reads `date` and `datetime` as `Date` by default, accepting that a
     `datetime`'s µs are dropped, as the engine's `Date` form does; the exact text is an option. This revises the interview's
     "dropping microseconds is always explicit" of 2026-11-06 (DESIGN.md section 14, decision 10) (2026-11-10).
+19. **Migrations on disk (gate A):** live diff, and saved change sets as well. CI may save each reviewed change set
+    as a file, and databases replay the files they haven't applied, in order, refusing edited files (checksums); live
+    diff stays for development and pipelines (2026-11-10).
+20. **Engine proposals opened** as smaltdb issues: structured EXPLAIN (E2, stenhoor/smaltdb#187), view interfaces
+    (E10, #188), the catalog's foreign keys, CHECKs and defaults (E1's remainder, #189), expressions that follow
+    renames (E11, #190), and the bugs F2–F4 (#191–#193) (2026-11-10).
+21. **Interfaces before E10 (gate B):** ship view interfaces as names and order, checked by smaltts, without waiting
+    for E10; milestone 6 part 1 starts now (2026-11-10).
 
 ## Open points for the owner
 
-1. **Migrations on disk:** live diff only, live diff plus saved change-set files, or saved files only (gate A of the
-   milestones).
-2. **Plugins:** typed descriptors shipped by plugins, and connections and external tables as specs, or the generic
+1. **Plugins:** typed descriptors shipped by plugins, and connections and external tables as specs, or the generic
    `plugin(name).call()` only.
-3. **Engine proposals:** which to open as smaltdb issues, and in what order. The ones smaltts needs: the catalog's
-   foreign keys, CHECKs and defaults (E1, S), structured EXPLAIN with costs (E2, M), view interfaces (E10, L); later,
-   change capture (E8), an adapting materialized-view refresh (E9), more in-place ALTERs (E4) and engine-side impact
-   (E5).
-4. **Interfaces before E10:** ship names and order only, or wait for E10 (gate B).
-5. **Flows and smaltfl:** what a flow holds and what smaltfl adds (gate C).
+2. **Flows and smaltfl:** what a flow holds and what smaltfl adds (gate C).
+3. **Typed column lists in SQL:** whether smaltql accepts declared types in a view's column list, once E10 lands.
 
 ## Alternatives considered
 

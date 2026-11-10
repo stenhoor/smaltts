@@ -69,19 +69,18 @@ Size: L. Status: done, 2026-11-10: every spec field compared (CHECKs, foreign ke
 `information_schema` until the engine's catalog lists them), rebuilds converted and classified by the conversion
 table, row and columnar tables (`test/diff.test.ts`). Gate A is next.
 
-- **smaltdb (S), no longer first:** the catalog listing foreign keys, CHECKs and default values (E1's remainder) would
+- **smaltdb (S), no longer first** (stenhoor/smaltdb#189): the catalog listing foreign keys, CHECKs and default values (E1's remainder) would
   replace the `information_schema` reads; milestone 3 did not wait for it.
 - The differ compares every spec field; the conversion table of DESIGN.md 8.3, for every type, classifies rebuilds.
 - `apply`: policies on impact and data loss, one transaction, the history table with checksums.
 - **Done when:** for every spec field, a change produces the expected step and class; diffing any database against
   its own catalog gives no steps, on row and columnar tables.
 
-**Gate A (owner): migrations on disk.** Live diff only, live diff plus saved change sets, or saved change sets only
-(DESIGN.md section 14, open question 1).
+**Gate A (owner): migrations on disk.** Decided 2026-11-10: live diff plus saved change sets (ADR 0023, decision 19).
 
 ## 4. Saved change sets
 
-Size: S if gate A chooses live diff only (a drift check only), M otherwise.
+Size: M (gate A chose live diff plus saved change sets).
 
 - `db.migrateFiles(dir)`: replay unapplied change-set files in order, refuse edited files (checksums), and report
   drift between the history and the catalog.
@@ -101,7 +100,7 @@ Size: M. Status: done, 2026-11-10: the relation operations (stenhoor/smaltts#10)
 
 ## 6. Views: reflecting and interface
 
-Size: M in smaltts; **smaltdb E10 is L**.
+Size: M in smaltts; **smaltdb E10 is L** (stenhoor/smaltdb#188).
 
 - **Without E10:** reflecting views by default, interface views with a column list (names and order), reading views
   of other languages, the change-set warnings and errors for affected views, and the recreate step for reflecting
@@ -111,7 +110,8 @@ Size: M in smaltts; **smaltdb E10 is L**.
   change-set entry, for both kinds of view, on plain and materialized views.
 - **Done when (part 2, after E10):** the same DDL from smaltql gives the same results.
 
-**Gate B (owner):** ship interfaces as names and order only until E10 lands, or wait for E10?
+**Gate B (owner):** decided 2026-11-10: ship interfaces as names and order now, without waiting for E10 (ADR 0023,
+decision 21).
 
 ## 7. Flows
 
@@ -128,7 +128,7 @@ smaltfl starts.
 
 ## 8. Plan review
 
-Size: S in smaltts; **smaltdb E2 is M**.
+Size: S in smaltts; **smaltdb E2 is M** (stenhoor/smaltdb#187).
 
 - `explain` as a tree with estimated and actual rows (today's engine); costs and structured operator fields once E2
   is in.
@@ -169,9 +169,9 @@ Size: M. Needs smaltdb's 0.9.0 publish.
 | 1 | Re-base | M | done (2026-11-10) |
 | 2 | Types in specs | M | done (2026-11-10) |
 | 3 | Diff complete | L | done (2026-11-10) |
-| 4 | Saved change sets | S–M | gate A |
+| 4 | Saved change sets | M | 3; gate A (decided) |
 | 5 | Typed plans | M | done (2026-11-10) |
-| 6 | Views | M | 3, 5; part 2 on smaltdb E10 (L); gate B |
+| 6 | Views | M | 3, 5; part 2 on smaltdb E10 (L); gate B (decided) |
 | 7 | Flows | L | 3, 5; gate C |
 | 8 | Plan review | S | 5; costs on smaltdb E2 (M) |
 | 9 | Plugins and external data | M | 3 |
