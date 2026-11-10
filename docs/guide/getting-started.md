@@ -10,7 +10,7 @@ The package will be `@smaltworks/smaltts` (not published yet). To try the protot
 
 ```bash
 npm ci && npm run deps   # dependencies, then the pinned smaltdb build
-npm run check            # typecheck and tests
+npm run check            # the tests
 ```
 
 ## A first database

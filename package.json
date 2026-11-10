@@ -24,9 +24,8 @@
   ],
   "scripts": {
     "deps": "node scripts/fetch-packed.mjs",
-    "typecheck": "node scripts/fetch-packed.mjs --check && tsc -p tsconfig.json",
     "test": "node scripts/fetch-packed.mjs --check && vitest run",
-    "check": "npm run typecheck && npm test",
+    "check": "npm test",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
@@ -41,7 +40,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
-    "typescript": "5.9",
+    "smaltty": "github:stenhoor/smaltty#cedb79c88e2f59b006cc0ef1bafbaa2dacadbdef",
     "vitepress": "^1.6.4",
     "vitest": "^5.0.5"
   }

@@ -1,6 +1,6 @@
 # ADR 0023: smaltts, a thin typed language for smaltdb
 
-- **Status:** proposed (for the owner's review)
+- **Status:** accepted (2026-11-10; owner's decisions below)
 - **Date:** 2026-11-09
 - **Builds on:** smaltdb [ADR 0015](https://github.com/stenhoor/smaltdb/blob/main/docs/adr/0015-smaltql.md) (the
   engine carries no language), [ADR 0016](https://github.com/stenhoor/smaltdb/blob/main/docs/adr/0016-plan-api-for-every-language.md)
@@ -92,7 +92,8 @@ resuming after the last committed step. Schedules, dependencies between flows, r
 - **Build data, then run it:** every builder returns JSON-safe data; running is a separate, asynchronous call.
 - **No runtime dependencies;** smaltdb is a peer dependency, and builders import only `smaltdb/plan`.
 - **The API reference is the specification:** an API change changes it in the same PR, and its examples are
-  typechecked against the code.
+  stripped with smaltty and run against the engine.
+- **TypeScript tooling is smaltty's:** no `typescript` dependency; smaltts uses smaltty and extends its checker.
 - **What the engine lacks is proposed to smaltdb,** never emulated in smaltts.
 
 ## Owner's decisions
@@ -114,23 +115,27 @@ Taken in the design interview of 2026-11-06 and in later sessions:
 11. **VitePress** for the docs site, a dev dependency (2026-11-08).
 12. **Merges go through pull requests** (2026-11-08).
 13. **One numbering for all smalt ADRs:** this record is 0023, after smaltdb's 0022 (2026-11-09).
+14. **Accepted** (2026-11-10).
+15. **Expression names:** every engine operation as `fn.<engine name>`, plus short aliases only where an operation has
+    one meaning (`.eq` is `cmp_eq`, `.and` the logic node); no meanings of smaltts's own (2026-11-10).
+16. **Dependencies:** smaltts uses and extends smaltty for its TypeScript tooling and has no `typescript`
+    dependency; other smaltworks packages are allowed; Node's types and vitest for development and tests only, never
+    in deployed code (2026-11-10).
+17. **smaltty's checker covers smaltts:** smaltty's checker work starts now with smaltts in its scope as well as
+    smaltdf (2026-11-10).
 
 ## Open points for the owner
 
 1. **Migrations on disk:** live diff only, live diff plus saved change-set files, or saved files only (gate A of the
    milestones).
-2. **Expression names:** engine operation names only (`fn.div_float`), or also short aliases where an operation has one
-   meaning (`eq` for `cmp_eq`).
-3. **Plugins:** typed descriptors shipped by plugins, and connections and external tables as specs, or the generic
+2. **Plugins:** typed descriptors shipped by plugins, and connections and external tables as specs, or the generic
    `plugin(name).call()` only.
-4. **Engine proposals:** which to open as smaltdb issues, and in what order. The ones smaltts needs: the catalog's
+3. **Engine proposals:** which to open as smaltdb issues, and in what order. The ones smaltts needs: the catalog's
    foreign keys, CHECKs and defaults (E1, S), structured EXPLAIN with costs (E2, M), view interfaces (E10, L); later,
    change capture (E8), an adapting materialized-view refresh (E9), more in-place ALTERs (E4) and engine-side impact
    (E5).
-5. **Interfaces before E10:** ship names and order only, or wait for E10 (gate B).
-6. **Flows and smaltfl:** what a flow holds and what smaltfl adds (gate C).
-7. **Outside code:** the prototype's `typescript` dev dependency (Apache-2.0, for typechecking and the reference test)
-   and its `vitest` and `@types/node` dev dependencies (MIT) need the owner's yes (milestone 0).
+4. **Interfaces before E10:** ship names and order only, or wait for E10 (gate B).
+5. **Flows and smaltfl:** what a flow holds and what smaltfl adds (gate C).
 
 ## Alternatives considered
 
@@ -156,6 +161,8 @@ Taken in the design interview of 2026-11-06 and in later sessions:
 - **The engine is asked for more:** E1's remainder, E2 and E10 are on smaltts's path; E10 is the largest.
 - **The prototype must be re-based** on smaltdb 0.9.0 (milestone 1): it predates the behaviour names and the language
   interface's changes.
+- **Static checks wait for smaltty's checker:** until it covers smaltts, the tests run the code and the reference's
+  examples, but nothing checks types; smaltty gains a second API to check, which tests its design beyond smaltdf.
 - **smaltts's status stays "Planned"** until its first milestones land; the change comes with a smalt-brand PR.
 
 ## Order of work

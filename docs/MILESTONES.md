@@ -16,12 +16,25 @@ milestone that needs one starts with the parts that don't.
 
 ## 0. Owner's yes on outside code
 
-Size: S (a decision). Status: needed now.
+Size: S. Status: done, 2026-11-10.
 
-- The prototype predates the rule "ask before adding outside code". It pins smaltdb in `packed.json` (our own code,
-  but the rule names pins) and has dev dependencies: `typescript` (Apache-2.0), `vitest` (MIT) and `@types/node`
-  (MIT), test and typecheck tools only, as smaltdf and smaltty have. Nothing reaches the package at run time.
-- **Done when:** the owner says yes or no.
+- The owner's decision: smaltts uses and extends smaltty for its TypeScript tooling, with no `typescript` dependency;
+  other smaltworks packages are allowed; Node's types and vitest are allowed for development and tests, never in
+  deployed code.
+- `typescript` is removed and the `tsc` typecheck with it. The reference's examples are stripped with smaltty and run.
+  Static checks (compile-time tests, the examples' types) return with smaltty's checker: see "Alongside" below.
+
+## Alongside: smaltty's checker covers smaltts
+
+Size: L, in smaltty (its milestone 7, the checker trial), with the owner's decision of 2026-11-10 to start it with
+smaltts in its scope as well as smaltdf.
+
+- smaltty's checker reads smaltts's `.d.ts` as it reads smaltdf's, and checks calls into smaltts: unknown methods
+  and properties, argument types and counts, column names and types in row callbacks (which need its mapped,
+  conditional and template-literal types). Checking smaltts's own source is not in scope.
+- **Done when:** `npm run check` runs smaltty's checker over `test/` and the reference's examples, the compile-time
+  tests' `@ts-expect-error` lines are reported, and it reports nothing tsc wouldn't (smaltty's milestone 7,
+  stenhoor/smaltty#4 records the scope).
 
 ## 1. Re-base on smaltdb 0.9.0
 
@@ -46,8 +59,8 @@ Size: M.
 - `inferTable` from JavaScript data recognises booleans, `Date`s, arrays and objects.
 - Values in and out: `Date` for `date` and `datetime`, booleans, arrays and objects; the exact temporal form on
   request.
-- **Done when:** every type round-trips through a load and a read; and a 500-column declared table typechecks in under
-  a second (shallow types, measured with `tsc --extendedDiagnostics`).
+- **Done when:** every type round-trips through a load and a read; and a 500-column declared table checks in under a
+  second with smaltty's checker (shallow types), once that runs.
 
 ## 3. Diff, change sets and history, complete
 
@@ -146,7 +159,8 @@ Size: M. Needs smaltdb's 0.9.0 publish.
 
 | # | Milestone | Size | Waits on |
 |---|---|---|---|
-| 0 | Outside code | S | owner |
+| 0 | Outside code | S | done (2026-11-10) |
+| — | smaltty's checker covers smaltts | L (smaltty) | smaltty's own milestones |
 | 1 | Re-base | M | 0 |
 | 2 | Types in specs | M | 1 |
 | 3 | Diff complete | L | 1, smaltdb catalog PR (S) |

@@ -22,7 +22,6 @@ jobs:
             .cache/packed/*-files
           key: packed-${{ hashFiles('packed.json') }}
       - run: node scripts/fetch-packed.mjs
-      - run: npm run typecheck
-      - run: npm test            # includes the API reference's examples, typechecked against src/
+      - run: npm test            # includes the API reference's examples, stripped with smaltty and run
       # The docs site: fails on dead links. It deploys from main (docs.yml).
       - run: npm run docs:build
