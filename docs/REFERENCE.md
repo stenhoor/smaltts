@@ -302,11 +302,17 @@ Callbacks receive the row's columns as typed expressions (`Expr<T>`): a misspelt
 | `caseWhen([[when, then], …], otherwise?)` | the `case` node | Prototype |
 | `exists(rel)`, `scalar(rel)`, `x.in(rel)`: subqueries, whose callbacks may read the enclosing rows' columns (a correlated reference, at any depth) | the `subquery` and `inSubquery` nodes | Prototype |
 
+**Typed by a table of signatures.** The engine's own operations (`add`, `sub`, the comparisons, the casts, `like`, …)
+have TypeScript signatures (`src/signatures.ts`): `fn.add` takes two numbers, or a time and a duration; `fn.sub` of two
+times is a duration. Other functions are typed loosely, with the engine's result type, so one the engine adds is usable
+at once. Compiling checks every call's argument count against the engine's catalog and names the call
+(`fn.add: takes 2 arguments, not 3`).
+
 **Aliases only where an operation has one meaning** (ADR 0023, owner's decision 15). Arithmetic (`fn.add` or
 `fn.add_checked`), division (`fn.div_float`, `fn.div_trunc`, `fn.div_floor`), case (`fn.lower` or `fn.lower_unicode`)
 and concatenation (`fn.text_concat` or `fn.concat`) have more than one, so they are called by their engine names.
-`fn` and `agg` are generated from the engine's catalog (`src/functions.ts`), and a test fails when the engine's list
-changes.
+`fn` and `agg` are generated from the engine's catalog (`src/functions.ts`, by `scripts/functions.mjs`), and a test
+fails when the engine's list changes.
 
 ## Views
 

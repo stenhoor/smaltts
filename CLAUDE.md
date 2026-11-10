@@ -37,7 +37,8 @@ To try an unmerged smaltdb change: `node scripts/fetch-packed.mjs --local smaltd
 - `src/spec.ts`: specs (tables, indexes) and the typed builders. `src/catalog.ts`: a database read back as specs, from
   the engine's catalog API. `src/changes.ts`: diff, change sets, apply and history. `src/rel.ts`: relations (the named
   IR), expressions (`fn`, `agg` and the aliases) and compiling them to engine plans. `src/functions.ts`: the engine's
-  functions, generated from its catalog (`test/functions.test.ts` fails when they change). `src/database.ts`:
+  functions, generated from its catalog by `node scripts/functions.mjs` (`test/functions.test.ts` fails when they
+  change). `src/signatures.ts`: the TypeScript signatures of the engine's operations. `src/database.ts`:
   `attach()` and the database API. `src/backend.ts`: engine and client backends. `src/source.ts`: the language name
   and view sources, with no engine import.
 - `src/language.ts` is its own entry point (`@smaltworks/smaltts/language`, for where the engine runs): smaltts as a
