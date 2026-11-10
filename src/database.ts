@@ -9,7 +9,7 @@ import { type Catalog, readCatalog } from './catalog.js';
 import { type Applied, type ApplyPolicy, type ChangeSet, type DiffOptions, apply, diff } from './changes.js';
 import { LANGUAGE, type ViewSource } from './source.js';
 import { type Cols, type Compiled, Expr, type Field, Rel, compileRel, expr } from './rel.js';
-import { type SchemaSpec, type StorageType, type TableSpec, type Value, columnIndex, planTypeOf, toIndexDef, toTableDef } from './spec.js';
+import { type SchemaSpec, type TableSpec, type Value, columnIndex, columnPlanType, toIndexDef, toTableDef } from './spec.js';
 
 /** How a load writes into its target. */
 export type LoadMode =
@@ -109,13 +109,20 @@ export class SmaltDb {
     return compileRel(rel, catalog);
   }
   /** Run a relation; rows are objects typed by the relation. */
-  async rows<Row extends Record<string, unknown>>(rel: Rel<Row>, params: Record<string, Value> = {}, options: { signal?: AbortSignal } = {}): Promise<Row[]> {
+  /**
+   * Run a relation; rows are objects typed by the relation. Dates and times come back as JavaScript `Date`s for `date`
+   * and `datetime` columns (a `Date` holds ms, so a `datetime`'s µs are dropped: owner's decision, 2026-11-10), or as
+   * the engine's exact text with `{ temporal: 'text' }`.
+   */
+  async rows<Row extends Record<string, unknown>>(rel: Rel<Row>, params?: Record<string, unknown>, options?: { signal?: AbortSignal; temporal?: 'date' }): Promise<Row[]>;
+  async rows<Row extends Record<string, unknown>>(rel: Rel<Row>, params: Record<string, unknown> | undefined, options: { signal?: AbortSignal; temporal: 'text' }): Promise<AsText<Row>[]>;
+  async rows<Row extends Record<string, unknown>>(rel: Rel<Row>, params: Record<string, unknown> = {}, options: { signal?: AbortSignal; temporal?: 'date' | 'text' } = {}): Promise<Row[]> {
     const c = await this.compile(rel);
-    const r = await this.backend.run({ kind: 'query', plan: c.plan, columns: c.fields.map((f) => ({ name: f.name, type: f.type, collation: f.collation })) }, bind(c, params), options);
+    const r = await this.backend.run({ kind: 'query', plan: c.plan, columns: c.fields.map((f) => ({ name: f.name, type: f.type, collation: f.collation })) }, bind(c, params), { ...options, temporal: options.temporal ?? 'date' });
     return r.rows.map((row) => Object.fromEntries(c.fields.map((f, i) => [f.name, row[i]])) as Row);
   }
   /** The plan the engine would run, as a tree; with `analyze`, run it and measure each node. */
-  async explain(rel: Rel<any>, options: { analyze?: boolean; params?: Record<string, Value> } = {}): Promise<Explained> {
+  async explain(rel: Rel<any>, options: { analyze?: boolean; params?: Record<string, unknown> } = {}): Promise<Explained> {
     const c = await this.compile(rel);
     const query = { kind: 'query' as const, plan: c.plan };
     const r = await this.backend.run({ kind: 'explain', mode: options.analyze ? 'analyze' : 'plan', query }, bind(c, options.params ?? {}));
@@ -130,14 +137,13 @@ export class SmaltDb {
     const catalog = await this.catalog();
     const target = catalog.table(typeof table === 'string' ? table : table.name);
     if (!target) throw new Error(`no table named ${typeof table === 'string' ? table : table.name}`);
-    const rel = source instanceof Rel ? source : rowsRel(target, source);
-    const c = compileRel(rel, catalog);
+    const c = source instanceof Rel ? compileRel(source, catalog) : rowsPlan(target, source);
     const columns = c.fields.map((f) => columnIndex(target, f.name));
     const write = (into: string, upsert: boolean): PlanStatementInput => ({
       kind: 'write',
       plan: {
         ...P.append(into, c.plan, columns),
-        upserts: upsert ? [{ target: null, update: { sets: columns.filter((i) => !isKey(target, i)).map((i) => ({ column: i, value: P.col(0, target.columns.length + 1 + i, planTypeOf(target.columns[i]!.type)) })) } }] : [],
+        upserts: upsert ? [{ target: null, update: { sets: columns.filter((i) => !isKey(target, i)).map((i) => ({ column: i, value: P.col(0, target.columns.length + 1 + i, columnPlanType(target.columns[i]!)) })) } }] : [],
       },
       source: c.fields.map((f) => ({ name: f.name, type: f.type })),
     });
@@ -180,7 +186,7 @@ export class SmaltDb {
     const catalog = await this.catalog();
     const spec = catalog.table(table.name) ?? table;
     // The rowid first, then the table's columns.
-    const fields: Field[] = [{ name: '__rowid', type: 'int', collation: 'binary' }, ...spec.columns.map((c) => ({ name: c.name, type: planTypeOf(c.type), collation: c.collation ?? 'binary' }))];
+    const fields: Field[] = [{ name: '__rowid', type: 'int', collation: 'binary' }, ...spec.columns.map((c) => ({ name: c.name, type: columnPlanType(c), collation: c.collation ?? 'binary' }))];
     const proxy = new Proxy({}, { get: (_, n) => (typeof n === 'string' ? new Expr({ k: 'col', name: n }) : undefined) });
     const input = P.filter(P.scan(spec.name, [-1, ...spec.columns.map((_, i) => i)]), expr(pred(proxy).node, [fields], []).e);
     return { input, fields, spec };
@@ -206,7 +212,7 @@ export function attach(db: EngineDatabase | ClientDatabase | Backend): SmaltDb {
   return new SmaltDb(backendOf(db));
 }
 
-function bind(c: Compiled, params: Record<string, Value>): Value[] {
+function bind(c: Compiled, params: Record<string, unknown>): unknown[] {
   return c.params.map((name) => {
     if (!(name in params)) throw new Error(`parameter ${name} has no value`);
     return params[name]!;
@@ -220,13 +226,22 @@ async function countIn(db: Backend, table: string): Promise<number> {
   return Number(r.rows[0]![0]);
 }
 
-/** JavaScript rows as a `values` relation, typed by the target table's columns. */
-function rowsRel(target: TableSpec<any>, rows: readonly Record<string, unknown>[]): Rel<any> {
+/**
+ * JavaScript rows as the engine's values from columns, typed by the target table's columns: the engine encodes
+ * booleans, `Date`s, arrays and objects itself (smaltdb ADRs 0016 §5, 0018–0020).
+ */
+function rowsPlan(target: TableSpec<any>, rows: readonly Record<string, unknown>[]): Compiled {
   const names = [...new Set(rows.flatMap((r) => Object.keys(r)))];
-  const columns = names.map((n) => ({ name: target.columns[columnIndex(target, n)]!.name, type: target.columns[columnIndex(target, n)]!.type as StorageType }));
-  const toValue = (v: unknown): Value => (v === undefined ? null : typeof v === 'boolean' ? (v ? 1 : 0) : (v as Value));
-  return new Rel({ r: 'values', columns, rows: rows.map((r) => names.map((n) => toValue(r[n]))) });
+  const cols = names.map((n) => target.columns[columnIndex(target, n)]!);
+  const types = cols.map(columnPlanType);
+  // A Date in a date column goes in as its ISO day: the engine reads a Date as a datetime there (finding F3).
+  const value = (v: unknown, type: string) => (v === undefined ? null : type === 'date' && v instanceof Date ? v.toISOString().slice(0, 10) : v);
+  const data = names.map((n, i) => rows.map((r) => value(r[n], types[i]!))) as P.ValueColumn[];
+  return { plan: P.fromColumns(data, types), fields: cols.map((c, i) => ({ name: c.name, type: types[i]!, collation: c.collation ?? 'binary' })), params: [] };
 }
+
+/** A row type as read with `{ temporal: 'text' }`: dates and times as the engine's text. */
+export type AsText<R> = { [K in keyof R]: R[K] extends Date ? string : R[K] extends Date | null ? string | null : R[K] };
 
 function explainTree(rows: readonly (readonly Value[])[], analyzed: boolean, plan: P.PlanOp): Explained {
   const nodes = new Map<number, { node: ExplainNode & { children: ExplainNode[] }; parent: number }>();

@@ -10,13 +10,19 @@
 import type { CatalogData, PlanStatementInput, PlanType } from 'smaltdb/plan';
 import type { Value } from './spec.js';
 
+export interface RunOptions {
+  readonly signal?: AbortSignal;
+  /** How dates and times come back: `'date'` (JS `Date`s for `date` and `datetime`) or `'text'` (the engine's text). */
+  readonly temporal?: 'date' | 'text';
+}
+
 export interface Result {
   readonly columns: readonly string[];
-  readonly rows: readonly (readonly Value[])[];
+  readonly rows: readonly (readonly unknown[])[];
 }
 
 export interface Backend {
-  run(stmt: PlanStatementInput, params?: readonly Value[], options?: { signal?: AbortSignal }): Promise<Result>;
+  run(stmt: PlanStatementInput, params?: readonly unknown[], options?: RunOptions): Promise<Result>;
   /** Run `fn` in one transaction: every statement it runs commits together, or none does. */
   transaction<T>(fn: (tx: Backend) => Promise<T>): Promise<T>;
   callPlugin(plugin: string, method: string, args: unknown[]): Promise<unknown>;
@@ -29,7 +35,7 @@ export interface Backend {
 
 /** The in-process engine's `Database`, as far as smaltts uses it. */
 export interface EngineDatabase {
-  queryPlanAsync(stmt: PlanStatementInput, params?: readonly Value[], options?: { signal?: AbortSignal }): Promise<{ columns: string[]; rows: Value[][] }>;
+  queryPlanAsync(stmt: PlanStatementInput, params?: readonly unknown[], options?: RunOptions): Promise<{ columns: string[]; rows: unknown[][] }>;
   callPlugin(plugin: string, method: string, args: unknown[]): Promise<unknown>;
   readonly inTransaction: boolean;
   readonly catalog: { snapshot(): CatalogData; resultType(name: string, args: readonly PlanType[]): PlanType | undefined };
@@ -37,7 +43,7 @@ export interface EngineDatabase {
 
 /** What the client `Database` and its transaction handles share, as far as smaltts uses it. */
 export interface ClientQueryable {
-  queryPlan(stmt: PlanStatementInput, params?: readonly Value[], options?: { rowMode?: 'array'; signal?: AbortSignal }): Promise<unknown>;
+  queryPlan(stmt: PlanStatementInput, params?: readonly unknown[], options?: { rowMode?: 'array'; signal?: AbortSignal; temporal?: 'date' | 'text' }): Promise<unknown>;
 }
 export interface ClientDatabase extends ClientQueryable {
   transaction<T>(fn: (tx: ClientQueryable) => Promise<T>): Promise<T>;
@@ -77,7 +83,7 @@ export function clientBackend(db: ClientDatabase): Backend {
   const over = (q: ClientQueryable, inTx: boolean): Backend => ({
     kind: 'client',
     async run(stmt, params, options) {
-      const rows = (await q.queryPlan(stmt, params, { rowMode: 'array', ...(options?.signal ? { signal: options.signal } : {}) })) as Value[][] & { columns: string[] };
+      const rows = (await q.queryPlan(stmt, params, { rowMode: 'array', ...(options?.signal ? { signal: options.signal } : {}), ...(options?.temporal ? { temporal: options.temporal } : {}) })) as unknown[][] & { columns: string[] };
       return { columns: rows.columns, rows };
     },
     callPlugin: (plugin, method, args) => db.callPlugin(plugin, method, args),

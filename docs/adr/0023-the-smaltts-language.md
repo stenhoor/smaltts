@@ -123,6 +123,9 @@ Taken in the design interview of 2026-11-06 and in later sessions:
     in deployed code (2026-11-10).
 17. **smaltty's checker covers smaltts:** smaltty's checker work starts now with smaltts in its scope as well as
     smaltdf (2026-11-10).
+18. **`Date` drops a `datetime`'s µs:** smaltts reads `date` and `datetime` as `Date` by default, accepting that a
+    `datetime`'s µs are dropped, as the engine's `Date` form does; the exact text is an option. This revises the interview's
+    "dropping microseconds is always explicit" of 2026-11-06 (DESIGN.md section 14, decision 10) (2026-11-10).
 
 ## Open points for the owner
 

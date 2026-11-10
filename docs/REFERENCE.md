@@ -74,8 +74,8 @@ const copy = tableSpec({ ...orders, name: 'orders_archive', indexes: [] });
 |---|---|---|
 | `table(name, columns, options?)` | A spec from column builders, with its row type (`$row`) and insert type (`$insert`: nullable, defaulted and integer-primary-key columns optional). Options: `storage` (`row`, `columnar`), `primaryKey`, `unique`, `indexes`, `foreignKeys`, `renamedFrom`. | Prototype |
 | `tableSpec(spec)` | A spec from plain data, checked: duplicate columns, and keys or indexes naming unknown columns, throw. | Prototype |
-| `inferTable(name, rows, options?)` | A spec inferred from sample rows: the run-time front door for discovered schemas. | Prototype (booleans, `Date`s, arrays and objects: planned, milestone 2) |
-| `TableSpec` fields | `kind: 'table'`, `name`, `columns`, `primaryKey`, `unique`, `indexes`, `foreignKeys`, `storage`, `renamedFrom` | Prototype; `checks` planned (milestone 2) |
+| `inferTable(name, rows, options?)` | A spec inferred from sample rows: the run-time front door for discovered schemas. Booleans are `BOOLEAN`, `Date`s `DATETIME`, arrays `LIST` (an empty array tells nothing of its elements), objects `STRUCT`; integers and reals widen to `REAL`, anything else mixed to `ANY`. | Prototype |
+| `TableSpec` fields | `kind: 'table'`, `name`, `columns` (`name`, `type`, `planType` for a list or struct, `notNull`, `collation`, `default`, `renamedFrom`), `primaryKey`, `unique`, `indexes`, `foreignKeys`, `storage`, `renamedFrom` | Prototype; `checks` planned (milestone 2) |
 
 ### Columns
 
@@ -87,13 +87,13 @@ const copy = tableSpec({ ...orders, name: 'orders_archive', indexes: [] });
 | `text()` | `TEXT` | `text` | `string` | Prototype |
 | `blob()` | `BLOB` | `blob` | `Uint8Array` | Prototype |
 | `any()` | `ANY` | `any` | any value | Prototype |
-| `bool()` | `BOOLEAN` | `bool` | `boolean` | Planned (milestone 2) |
-| `date()` | `DATE` | `date` | `Date` (midnight UTC) | Planned (milestone 2) |
-| `datetime({ zone? })` | `DATETIME` | `datetime` (µs) | `Date` | Planned (milestone 2) |
-| `time()` | `TIME` | `time` (µs) | `string` (ISO) | Planned (milestone 2) |
-| `duration()` | `DURATION` | `duration` (µs) | `string` (ISO 8601) | Planned (milestone 2) |
-| `list(inner)` | `LIST` | `list<T>` | `T[]` | Planned (milestone 2) |
-| `struct({ … })` | `STRUCT` | `struct<…>` | an object | Planned (milestone 2) |
+| `bool()` | `BOOLEAN` | `bool` | `boolean` | Prototype |
+| `date()` | `DATE` | `date` | `Date` (midnight UTC) | Prototype |
+| `datetime()` | `DATETIME` | `datetime` (µs) | `Date` (ms: µs are dropped) | Prototype; a column's default zone (`{ zone }`) is planned |
+| `time()` | `TIME` | `time` (µs) | `string` (`12:30:00`) | Prototype |
+| `duration()` | `DURATION` | `duration` (µs) | `string` (ISO 8601, `PT1H30M`) | Prototype (reads; writing its text waits on smaltdb finding F2) |
+| `list(inner)` | `LIST` | `list<T>` | `T[]` | Prototype |
+| `struct({ … })` | `STRUCT` | `struct<…>` | an object | Prototype |
 
 Every column is nullable unless `.notNull()` or `.primaryKey()`. Modifiers:
 
@@ -224,8 +224,8 @@ Callbacks receive the row's columns as typed expressions (`Expr<T>`): a misspelt
 | Comparisons: `.eq`, `.ne`, `.lt`, `.lte`, `.gt`, `.gte`, `.is`, `.isNot`, `.in([...])`, `.like(p)`, `.glob(p)` | `cmp_eq` … `cmp_ge`, `cmp_is`, `cmp_is_not`, `in_list`, `like`, `glob`; results are the engine's `bool` | Prototype |
 | Logic and NULLs: `.and`, `.or`, `.not()`, `and(...)`, `or(...)`, `not(x)`, `.isNull()`, `.isNotNull()`, `.orElse(v)` | the logic nodes, `isNull`, `coalesce` | Prototype |
 | `.collate(c)` | the collation a comparison compares text by | Prototype |
-| `lit(v)`, `col(name)` | a literal (a JavaScript boolean is a `bool`), a column by name | Prototype |
-| `param.int(name)`, `.real`, `.text`, `.bool`, `.any` | a named parameter, given when the plan runs | Prototype |
+| `lit(v)`, `col(name)` | a literal (a JavaScript boolean is a `bool`; a `Date` is a `date` or a `datetime`, whichever it is compared with), a column by name | Prototype |
+| `param.int(name)`, `.real`, `.text`, `.bool`, `.date`, `.datetime`, `.any` | a named parameter, given when the plan runs (a `Date` for `.date` and `.datetime`) | Prototype |
 | `agg.<name>(...args, { distinct?, filter? })`: every engine aggregate by its engine name (`agg.sum`, `agg.count()` for rows, `agg.first`, `agg.median`, `agg.implode`, …) | the aggregate itself | Prototype |
 
 **Aliases only where an operation has one meaning** (ADR 0023, owner's decision 15). Arithmetic (`fn.add` or
@@ -281,7 +281,7 @@ await db.updateWhere(orders, (o) => ({ total: fn.mul(o.total, 2) }), (o) => o.cu
 
 | | | |
 |---|---|---|
-| `db.load(table, source, { mode? })` | Writes a relation's rows or JavaScript rows into a table, matched by column name. Returns `{ rows }`. | Prototype |
+| `db.load(table, source, { mode? })` | Writes a relation's rows or JavaScript rows into a table, matched by column name. JavaScript rows go to the engine as columns of values, so booleans, `Date`s, arrays and objects go in as they are. Returns `{ rows }`. | Prototype |
 | `mode: 'append'` (default), `'upsert'`, `'replace'`, `'swap'` | Add; add and update on a key conflict; delete all then add, in one transaction; build a copy and switch it in. | Prototype |
 | `mode: 'merge'` with `key` | Insert, update or delete per match. | Planned (milestone 7) |
 | `db.deleteWhere(table, pred)`, `db.updateWhere(table, set, pred)` | Delete or update the rows where `pred` is true. | Prototype |
@@ -330,7 +330,7 @@ console.log(String(measured));
 | | | |
 |---|---|---|
 | `db.compile(rel)` | `{ plan, fields, params }`: the engine plan, its output columns and its parameter names in order. | Prototype |
-| `db.rows(rel, params?, { signal? })` | Runs a relation; rows are objects typed by the relation. | Prototype |
+| `db.rows(rel, params?, { signal?, temporal? })` | Runs a relation; rows are objects typed by the relation. `date` and `datetime` values are `Date`s (a `datetime`'s µs are dropped: owner's decision, 2026-11-10); `{ temporal: 'text' }` gives the engine's exact text instead, and the row type says `string`. Lists and structs are arrays and objects. | Prototype |
 | `db.explain(rel, { analyze?, params? })` | The physical plan as a tree of `ExplainNode` (`detail`, `estimatedRows`, `actual: { rows, loops, timeMs }`, `children`); `String(…)` renders it. | Prototype |
 | Costs and structured fields per node (operator, table, index) | Asserting a plan's shape from fields, not text. | Planned (milestone 8, needs smaltdb E2) |
 | `db.analyze(table?)` | Gathers statistics, so plans can be estimated. | Prototype |
