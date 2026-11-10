@@ -153,12 +153,22 @@ export class SmaltDb {
     await this.backend.transaction(async (tx) => {
       if (mode === 'replace') await tx.run({ kind: 'write', plan: P.remove(target.name, P.scan(target.name, [-1]), 0) });
       if (mode === 'swap') {
-        const next = { ...target, name: `${target.name}__smaltts_swap`, indexes: [] };
+        // The engine cannot rename a columnar table (finding F4): a columnar target is recreated under its name and
+        // filled from a row-storage staging table instead.
+        const columnar = (target.storage ?? 'row') === 'columnar';
+        const next = { ...target, name: `${target.name}__smaltts_swap`, indexes: [], ...(columnar ? { storage: 'row' as const } : {}) };
         await tx.run({ kind: 'schema', op: { op: 'drop', objectType: 'table', name: next.name, ifExists: true } });
         await tx.run({ kind: 'schema', op: { op: 'createTable', table: toTableDef(next), temp: false, ifNotExists: false } });
         await tx.run(write(next.name, false), bind(c, {}));
         await tx.run({ kind: 'schema', op: { op: 'drop', objectType: 'table', name: target.name, ifExists: false } });
-        await tx.run({ kind: 'schema', op: { op: 'alterTable', table: next.name, action: { kind: 'renameTable', newName: target.name } } });
+        if (columnar) {
+          const all = target.columns.map((_, i) => i);
+          await tx.run({ kind: 'schema', op: { op: 'createTable', table: toTableDef(target), temp: false, ifNotExists: false } });
+          await tx.run({ kind: 'write', plan: P.append(target.name, P.scan(next.name, all), all) });
+          await tx.run({ kind: 'schema', op: { op: 'drop', objectType: 'table', name: next.name, ifExists: false } });
+        } else {
+          await tx.run({ kind: 'schema', op: { op: 'alterTable', table: next.name, action: { kind: 'renameTable', newName: target.name } } });
+        }
         for (const ix of target.indexes ?? []) {
           await tx.run({ kind: 'schema', op: { op: 'createIndex', index: toIndexDef(target, ix), ifNotExists: false } });
         }

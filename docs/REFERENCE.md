@@ -185,6 +185,14 @@ dataLoss, reason, statements }`, where `statements` are the engine statements it
 | `rebuildTable` (a change the engine can't make in place: type, nullability, collation, default, keys, CHECKs, foreign keys, storage, column order, or renaming a column a CHECK or computed default reads) | `rewrite` | `none`, `possible` or `certain`, by the conversion table of [DESIGN.md 8.3](DESIGN.md#_8-3-type-changes-decided-by-types-never-by-data), never by the data |
 | `dropTable` (with `prune`) | `metadata` | `certain` |
 
+**Type changes** in a rebuild are converted with the engine's cast for the pair and classified by the conversion table
+([DESIGN.md 8.3](DESIGN.md#_8-3-type-changes-decided-by-types-never-by-data)): lossless pairs (`INTEGER` to
+`NUMERIC` or `TEXT`, `BOOLEAN` to `INTEGER`, `DATE` to `DATETIME`, any date or time to `TEXT`, `TEXT` to `BLOB`, …) are
+data loss `none`; pairs that can change or fail (`REAL` to `INTEGER`, `TEXT` to a number or a date, `DATETIME` to
+`DATE`) are `possible`; a pair with no conversion is an error diagnostic, and `apply` refuses the change set. A
+NOT NULL column added with no default makes a rebuild `possible` (it fails on a table with rows). Columnar tables are
+rebuilt through a row-storage staging table (smaltdb finding F4).
+
 **`ApplyPolicy`:** `{ allowDataLoss?: 'none' | 'possible' | 'certain', maxImpact?: Impact, label?: string }`.
 `allowDataLoss` defaults to `none`. A change set with error diagnostics is refused.
 

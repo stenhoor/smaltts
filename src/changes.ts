@@ -15,8 +15,9 @@ import type { PlanStatementInput } from 'smaltdb/plan';
 import * as P from 'smaltdb/plan';
 import type { Backend } from './backend.js';
 import { type Catalog, readCatalog } from './catalog.js';
+import { conversion } from './conversions.js';
 import { toColumnDef, toIndexDef, toTableDef } from './ddl.js';
-import { type CheckSpec, type ColumnSpec, type ForeignKeySpec, type IndexSpec, type SchemaSpec, type TableSpec, columnIndex } from './spec.js';
+import { type CheckSpec, type ColumnSpec, type ForeignKeySpec, type IndexSpec, type SchemaSpec, type TableSpec, columnIndex, columnPlanType } from './spec.js';
 
 /** How much a step costs and disrupts, from least to most. */
 export type Impact = 'metadata' | 'instant' | 'build' | 'rewrite';
@@ -181,7 +182,7 @@ function tableSteps(old: TableSpec<any>, want: TableSpec<any>, diagnostics: Diag
       ...(old.indexes ?? []).filter((ix) => !(want.indexes ?? []).some((w) => same(w.name, ix.name))).map((ix) => `drops index ${ix.name}`),
       ...(want.indexes ?? []).filter((ix) => !(old.indexes ?? []).some((o) => same(o.name, ix.name))).map((ix) => `creates index ${ix.name}`),
     ];
-    steps.push(rebuildStep(old, want, matched, also.length ? [...rebuild, `also ${also.join(', ')}`] : rebuild));
+    steps.push(rebuildStep(old, want, matched, also.length ? [...rebuild, `also ${also.join(', ')}`] : rebuild, diagnostics));
     return steps;
   }
 
@@ -264,27 +265,60 @@ function sameIndex(a: IndexSpec, b: IndexSpec, matched: Map<ColumnSpec, ColumnSp
 }
 
 /** Rebuild `old` as `want`: new table, rows copied by an append plan, old table dropped, new one renamed. */
-function rebuildStep(old: TableSpec<any>, want: TableSpec<any>, matched: Map<ColumnSpec, ColumnSpec>, reasons: string[]): Step {
+/**
+ * The statements of a rebuild. The engine cannot rename a columnar table (finding F4), so when either side is
+ * columnar the rows go through a row-storage staging table: copy there, drop the old table, create the new one under
+ * its name, copy back, drop the staging table. Otherwise the new table is built under a temporary name and renamed.
+ */
+function* rebuildStatements(old: TableSpec<any>, want: TableSpec<any>, temp: TableSpec<any>, copy: plan.PlanOp): Generator<PlanStatementInput> {
+  const columnar = (old.storage ?? 'row') === 'columnar' || (want.storage ?? 'row') === 'columnar';
+  const staging = columnar ? { ...temp, storage: 'row' as const } : temp;
+  yield { kind: 'schema', op: { op: 'createTable', table: toTableDef(staging), temp: false, ifNotExists: false } };
+  yield { kind: 'write', plan: copy };
+  yield { kind: 'schema', op: { op: 'drop', objectType: 'table', name: old.name, ifExists: false } };
+  if (columnar) {
+    yield { kind: 'schema', op: { op: 'createTable', table: toTableDef(want), temp: false, ifNotExists: false } };
+    const all = want.columns.map((_, i) => i);
+    yield { kind: 'write', plan: P.append(want.name, P.scan(staging.name, all), all) };
+    yield { kind: 'schema', op: { op: 'drop', objectType: 'table', name: staging.name, ifExists: false } };
+  } else {
+    yield { kind: 'schema', op: { op: 'alterTable', table: staging.name, action: { kind: 'renameTable', newName: want.name } } };
+  }
+  for (const ix of want.indexes ?? []) yield { kind: 'schema', op: { op: 'createIndex', index: toIndexDef(want, ix), ifNotExists: false } };
+}
+
+function rebuildStep(old: TableSpec<any>, want: TableSpec<any>, matched: Map<ColumnSpec, ColumnSpec>, reasons: string[], diagnostics: Diagnostic[]): Step {
   const temp = `${want.name}__smaltts_rebuild`;
   const tempSpec = { ...want, name: temp, indexes: [] };
   const copied = want.columns.filter((c) => matched.has(c));
   const scan = P.scan(old.name, copied.map((c) => columnIndex(old, matched.get(c)!.name)));
-  const copy: plan.PlanOp = P.append(temp, scan, copied.map((c) => columnIndex(want, c.name)));
-  const narrows = [...matched].some(([c, p]) => p.type !== c.type || (!p.notNull && c.notNull));
+  // Each column whose type changes is converted with the engine's cast for the pair (the conversion table).
+  let loss: DataLoss = 'none';
+  const exprs = copied.map((c, i) => {
+    const prev = matched.get(c)!;
+    const raw = P.col(0, i, columnPlanType(prev), prev.collation ?? 'binary');
+    const sameType = prev.type === c.type && fullType(prev) === fullType(c);
+    if (sameType) return raw;
+    const conv = prev.type === c.type ? undefined : conversion(prev.type, c.type);
+    if (!conv) {
+      diagnostics.push({ level: 'error', object: `${want.name}.${c.name}`, message: `no conversion from ${prev.planType ?? prev.type} to ${c.planType ?? c.type}: drop the column and add a new one, or convert the values in a load` });
+      return raw;
+    }
+    if (conv.loss === 'possible') loss = 'possible';
+    return conv.fn ? P.call(conv.fn, [raw], columnPlanType(c)) : raw;
+  });
+  if ([...matched].some(([c, p]) => !p.notNull && c.notNull)) loss = 'possible';
+  // An added NOT NULL column with no default has nothing to copy into it: the copy fails if the table has rows.
+  if (want.columns.some((c) => !matched.has(c) && c.notNull && c.default === undefined && c.defaultExpr === undefined)) loss = 'possible';
+  const copy: plan.PlanOp = P.append(temp, P.project(scan, exprs), copied.map((c) => columnIndex(want, c.name)));
   const drops = old.columns.length > matched.size;
   return {
     action: 'rebuildTable',
     object: want.name,
     impact: 'rewrite',
-    dataLoss: drops ? 'certain' : narrows ? 'possible' : 'none',
+    dataLoss: drops ? 'certain' : loss,
     reason: reasons.join('; '),
-    statements: [
-      { kind: 'schema', op: { op: 'createTable', table: toTableDef(tempSpec), temp: false, ifNotExists: false } },
-      { kind: 'write', plan: copy },
-      { kind: 'schema', op: { op: 'drop', objectType: 'table', name: old.name, ifExists: false } },
-      { kind: 'schema', op: { op: 'alterTable', table: temp, action: { kind: 'renameTable', newName: want.name } } },
-      ...(want.indexes ?? []).map((ix): PlanStatementInput => ({ kind: 'schema', op: { op: 'createIndex', index: toIndexDef(want, ix), ifNotExists: false } })),
-    ],
+    statements: [...rebuildStatements(old, want, tempSpec, copy)],
   };
 }
 
