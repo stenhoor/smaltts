@@ -8,7 +8,7 @@ export { type ColumnSpec, type IndexSpec, type KeySpec, type ForeignKeySpec, typ
 export { toColumnDef, toTableDef, toIndexDef } from './ddl.js';
 export { type Catalog, type CatalogViewInfo, readCatalog, specOfCatalogTable } from './catalog.js';
 export { type ChangeSet, type Step, type Impact, type DataLoss, type Diagnostic, type DiffOptions, type ApplyPolicy, type Applied, HISTORY_TABLE, diff, diffCatalog, apply, describe } from './changes.js';
-export { type RelNode, type ExprNode, type ColumnType, type Cols, type Compiled, type Field, type Resolver, type AggOptions, Rel, Expr, scan, values, tableFunction, relFromJSON, compileRel, lit, col, and, or, not, fn, param, agg } from './rel.js';
+export { type RelNode, type ExprNode, type ColumnType, type Cols, type Compiled, type Field, type Resolver, type AggOptions, type JoinKind, type JoinOptions, type AsofOptions, Rel, Expr, scan, values, fromColumns, tableFunction, relFromJSON, compileRel, lit, col, and, or, not, fn, param, agg } from './rel.js';
 export { SCALAR, AGGREGATE, type ScalarName, type AggregateName } from './functions.js';
 export { type ExplainNode, type Explained, type LoadMode, type AsText, SmaltDb, attach } from './database.js';
 export { type Backend, type Result, type RunOptions, engineBackend, clientBackend, backendOf } from './backend.js';

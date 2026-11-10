@@ -11,7 +11,7 @@
  */
 import * as P from 'smaltdb/plan';
 import { AGGREGATE, SCALAR, type ScalarName } from './functions.js';
-import { type Cols, type ExprNode, type Truth, Expr, col } from './expr.js';
+import { type Cols, type ExprNode, type Truth, Expr, col, toNode } from './expr.js';
 import { type Collation, type StorageType, type TableSpec, type Value, columnPlanType } from './spec.js';
 
 export { type AggOptions, type Arg, type Cols, type ExprNode, type Truth, Expr, agg, and, col, fn, lit, not, or, param } from './expr.js';
@@ -22,18 +22,47 @@ export interface ColumnType {
   readonly planType?: string;
 }
 
+export type JoinKind = 'inner' | 'left' | 'right' | 'full' | 'semi' | 'anti' | 'cross' | 'asof';
+
+/** A count or fraction: a number, or an expression over no columns (a parameter). */
+export type Amount = number | ExprNode;
+
 export type RelNode =
   | { readonly r: 'scan'; readonly table: string }
   | { readonly r: 'values'; readonly columns: readonly ColumnType[]; readonly rows: readonly (readonly (Value | boolean)[])[] }
+  /** Values given as one array per column (typed arrays among them): for loads, not views, as typed arrays are not JSON. */
+  | { readonly r: 'columns'; readonly columns: readonly ColumnType[]; readonly data: readonly P.ValueColumn[] }
   | { readonly r: 'function'; readonly name: string; readonly args: readonly Value[]; readonly named?: Readonly<Record<string, Value>>; readonly columns: readonly ColumnType[] }
   | { readonly r: 'filter'; readonly input: RelNode; readonly pred: ExprNode }
   | { readonly r: 'select'; readonly input: RelNode; readonly fields: readonly (readonly [string, ExprNode])[] }
-  | { readonly r: 'join'; readonly kind: 'inner' | 'left' | 'semi' | 'anti' | 'cross'; readonly left: RelNode; readonly right: RelNode; readonly on?: ExprNode; readonly prefix?: string }
-  | { readonly r: 'aggregate'; readonly input: RelNode; readonly keys: readonly (readonly [string, ExprNode])[]; readonly aggs: readonly (readonly [string, ExprNode])[] }
+  | {
+      readonly r: 'join';
+      readonly kind: JoinKind;
+      readonly left: RelNode;
+      readonly right: RelNode;
+      readonly on?: ExprNode;
+      readonly prefix?: string;
+      readonly ordered?: true;
+      readonly asof?: { readonly left: ExprNode; readonly right: ExprNode; readonly direction: 'backward' | 'forward' | 'nearest'; readonly tolerance?: ExprNode };
+    }
+  | { readonly r: 'aggregate'; readonly input: RelNode; readonly keys: readonly (readonly [string, ExprNode])[]; readonly aggs: readonly (readonly [string, ExprNode])[]; readonly ordered?: true }
   | { readonly r: 'sort'; readonly input: RelNode; readonly keys: readonly { readonly expr: ExprNode; readonly desc: boolean }[] }
-  | { readonly r: 'limit'; readonly input: RelNode; readonly count: number; readonly offset?: number }
-  | { readonly r: 'distinct'; readonly input: RelNode }
-  | { readonly r: 'union'; readonly all: boolean; readonly inputs: readonly [RelNode, RelNode] };
+  | { readonly r: 'limit'; readonly input: RelNode; readonly count: Amount; readonly offset?: Amount; readonly fromEnd?: true }
+  | { readonly r: 'distinct'; readonly input: RelNode; readonly on?: readonly string[]; readonly keep?: 'first' | 'last'; readonly ordered?: true }
+  | { readonly r: 'union'; readonly all: boolean; readonly inputs: readonly [RelNode, RelNode] }
+  | { readonly r: 'setop'; readonly kind: 'intersect' | 'except'; readonly inputs: readonly [RelNode, RelNode] }
+  | { readonly r: 'sample'; readonly input: RelNode; readonly count?: Amount; readonly fraction?: Amount; readonly replace: boolean; readonly seed: number }
+  | { readonly r: 'explode'; readonly input: RelNode; readonly column: string; readonly position?: string; readonly emptyAsNull?: true; readonly keepNulls?: false }
+  | {
+      readonly r: 'pivot';
+      readonly input: RelNode;
+      readonly keys: readonly (readonly [string, ExprNode])[];
+      readonly on: ExprNode;
+      readonly values: readonly Value[];
+      readonly aggs: readonly (readonly [string, ExprNode])[];
+      readonly ordered?: true;
+    }
+  | { readonly r: 'unpivot'; readonly input: RelNode; /** Absent: every column not unpivoted. */ readonly keep?: readonly string[]; readonly columns: readonly string[]; readonly name: string; readonly value: string };
 
 // ---------------------------------------------------------------------------------------------------------------
 // Typed relations.
@@ -44,9 +73,30 @@ type RowOfFields<F extends Fields> = { [K in keyof F]: F[K]['$type'] };
 type Prefixed<R, Px extends string> = { [K in keyof R & string as `${Px}${K}`]: R[K] };
 type Nullable<R> = { [K in keyof R]: R[K] | null };
 type Pred = Expr<Truth>;
+type Names<Row> = keyof Row & string;
+type ElementOf<T> = T extends readonly (infer E)[] ? E | null : unknown;
 
 function colsProxy<R>(): Cols<R> {
   return new Proxy({} as Cols<R>, { get: (_, name) => (typeof name === 'string' ? col(name) : undefined) });
+}
+
+const fieldsOf = (f: Fields): (readonly [string, ExprNode])[] => Object.entries(f).map(([n, e]) => [n, e.node] as const);
+const amount = (v: number | Expr<number>): Amount => (typeof v === 'number' ? v : v.node);
+
+export interface JoinOptions<Px extends string> {
+  /** Renames the right side's columns (needed when names collide). */
+  readonly prefix?: Px;
+  /** Keep the left side's order, and for each left row its matches in the right side's order. */
+  readonly ordered?: boolean;
+}
+
+export interface AsofOptions<Row, S, Px extends string> extends JoinOptions<Px> {
+  /** `backward` (default): the largest right key at or below the left's; `forward`: the smallest at or above; `nearest`. */
+  readonly direction?: 'backward' | 'forward' | 'nearest';
+  /** The largest distance between the keys. */
+  readonly tolerance?: number | Expr<unknown>;
+  /** Only right rows this matches are candidates. */
+  readonly on?: (l: Cols<Row>, r: Cols<Prefixed<S, Px>>) => Pred;
 }
 
 export class Rel<Row extends AnyRow = AnyRow> {
@@ -62,23 +112,35 @@ export class Rel<Row extends AnyRow = AnyRow> {
   }
   /** Compute a new set of columns. */
   select<F extends Fields>(fields: (r: Cols<Row>) => F): Rel<RowOfFields<F>> {
-    return new Rel({ r: 'select', input: this.node, fields: Object.entries(fields(colsProxy<Row>())).map(([n, e]) => [n, e.node] as const) });
+    return new Rel({ r: 'select', input: this.node, fields: fieldsOf(fields(colsProxy<Row>())) });
   }
   /** Keep every column and add (or replace) some. */
   extend<F extends Fields>(fields: (r: Cols<Row>) => F): Rel<Omit<Row, keyof F> & RowOfFields<F>> {
-    return new Rel({ r: 'select', input: this.node, fields: [['*', { k: 'lit', value: null }], ...Object.entries(fields(colsProxy<Row>())).map(([n, e]) => [n, e.node] as const)] });
+    return new Rel({ r: 'select', input: this.node, fields: [['*', { k: 'lit', value: null }], ...fieldsOf(fields(colsProxy<Row>()))] });
   }
   /** Keep only these columns, in this order. */
-  pick<K extends keyof Row & string>(...names: K[]): Rel<Pick<Row, K>> {
+  pick<K extends Names<Row>>(...names: K[]): Rel<Pick<Row, K>> {
     return new Rel({ r: 'select', input: this.node, fields: names.map((n) => [n, { k: 'col', name: n }] as const) });
   }
   /** Join `right`. Its columns follow this one's; `prefix` renames them (needed when names collide). */
-  join<S extends AnyRow, Px extends string = ''>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<Prefixed<S, Px>>) => Pred, options: { prefix?: Px } = {}): Rel<Row & Prefixed<S, Px>> {
+  join<S extends AnyRow, Px extends string = ''>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<Prefixed<S, Px>>) => Pred, options: JoinOptions<Px> = {}): Rel<Row & Prefixed<S, Px>> {
     return this.joinOf('inner', right, on, options);
   }
   /** Join `right`, keeping rows of this relation without a match (the right columns are then NULL). */
-  leftJoin<S extends AnyRow, Px extends string = ''>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<Prefixed<S, Px>>) => Pred, options: { prefix?: Px } = {}): Rel<Row & Nullable<Prefixed<S, Px>>> {
+  leftJoin<S extends AnyRow, Px extends string = ''>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<Prefixed<S, Px>>) => Pred, options: JoinOptions<Px> = {}): Rel<Row & Nullable<Prefixed<S, Px>>> {
     return this.joinOf('left', right, on, options);
+  }
+  /** Join `right`, keeping rows of `right` without a match (this relation's columns are then NULL). */
+  rightJoin<S extends AnyRow, Px extends string = ''>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<Prefixed<S, Px>>) => Pred, options: JoinOptions<Px> = {}): Rel<Nullable<Row> & Prefixed<S, Px>> {
+    return this.joinOf('right', right, on, options);
+  }
+  /** Join `right`, keeping the rows of either side without a match. */
+  fullJoin<S extends AnyRow, Px extends string = ''>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<Prefixed<S, Px>>) => Pred, options: JoinOptions<Px> = {}): Rel<Nullable<Row> & Nullable<Prefixed<S, Px>>> {
+    return this.joinOf('full', right, on, options);
+  }
+  /** Every row of this relation with every row of `right`. */
+  crossJoin<S extends AnyRow, Px extends string = ''>(right: Rel<S>, options: JoinOptions<Px> = {}): Rel<Row & Prefixed<S, Px>> {
+    return this.joinOf('cross', right, undefined, options);
   }
   /** The rows that have a match in `right`. */
   semiJoin<S extends AnyRow>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<S>) => Pred): Rel<Row> {
@@ -88,28 +150,139 @@ export class Rel<Row extends AnyRow = AnyRow> {
   antiJoin<S extends AnyRow>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<S>) => Pred): Rel<Row> {
     return this.joinOf('anti', right, on as never, {}) as never;
   }
-  private joinOf(kind: 'inner' | 'left' | 'semi' | 'anti', right: Rel<any>, on: (l: any, r: any) => Pred, options: { prefix?: string }): Rel<any> {
-    // Both sides' columns are referenced by name; collisions are resolved (or rejected) when the plan is compiled.
-    const pred = on(colsProxy(), colsProxy()).node;
-    return new Rel({ r: 'join', kind, left: this.node, right: right.node, on: pred, ...(options.prefix ? { prefix: options.prefix } : {}) });
+  /**
+   * Each row of this relation, in order, with the row of `right` whose key is nearest its own (`keys` gives the left
+   * key and the right key), or NULLs when none is near enough.
+   */
+  asofJoin<S extends AnyRow, Px extends string = ''>(
+    right: Rel<S>,
+    keys: (l: Cols<Row>, r: Cols<Prefixed<S, Px>>) => readonly [Expr<unknown>, Expr<unknown>],
+    options: AsofOptions<Row, S, Px> = {},
+  ): Rel<Row & Nullable<Prefixed<S, Px>>> {
+    const [l, r] = keys(colsProxy(), colsProxy());
+    const tolerance = options.tolerance === undefined ? undefined : toNode(options.tolerance);
+    const asof = { left: l.node, right: r.node, direction: options.direction ?? 'backward', ...(tolerance ? { tolerance } : {}) } as const;
+    return new Rel({ ...this.joinNode('asof', right, options.on, options), asof });
   }
-  /** Group by `keys` and compute `aggs` per group (no keys: one row for all of them). */
-  aggregate<K extends Fields, A extends Fields>(keys: (r: Cols<Row>) => K, aggs: (r: Cols<Row>) => A): Rel<RowOfFields<K> & RowOfFields<A>> {
+  private joinOf(kind: JoinKind, right: Rel<any>, on: ((l: any, r: any) => Pred) | undefined, options: JoinOptions<string>): Rel<any> {
+    return new Rel(this.joinNode(kind, right, on, options));
+  }
+  private joinNode(kind: JoinKind, right: Rel<any>, on: ((l: any, r: any) => Pred) | undefined, options: JoinOptions<string>): Extract<RelNode, { r: 'join' }> {
+    // Both sides' columns are referenced by name; collisions are resolved (or rejected) when the plan is compiled.
+    const pred = on?.(colsProxy(), colsProxy()).node;
+    return {
+      r: 'join',
+      kind,
+      left: this.node,
+      right: right.node,
+      ...(pred ? { on: pred } : {}),
+      ...(options.prefix ? { prefix: options.prefix } : {}),
+      ...(options.ordered ? { ordered: true as const } : {}),
+    };
+  }
+  /**
+   * Group by `keys` and compute `aggs` per group (no keys: one row for all of them). `ordered`: the groups in the order
+   * of their first row.
+   */
+  aggregate<K extends Fields, A extends Fields>(keys: (r: Cols<Row>) => K, aggs: (r: Cols<Row>) => A, options: { ordered?: boolean } = {}): Rel<RowOfFields<K> & RowOfFields<A>> {
     const c = colsProxy<Row>();
-    return new Rel({ r: 'aggregate', input: this.node, keys: Object.entries(keys(c)).map(([n, e]) => [n, e.node] as const), aggs: Object.entries(aggs(c)).map(([n, e]) => [n, e.node] as const) });
+    return new Rel({ r: 'aggregate', input: this.node, keys: fieldsOf(keys(c)), aggs: fieldsOf(aggs(c)), ...(options.ordered ? { ordered: true as const } : {}) });
   }
   /** Order rows; prefix a column with `-` for descending: `sort('-total', 'name')`. */
-  sort(...keys: (`${keyof Row & string}` | `-${keyof Row & string}`)[]): Rel<Row> {
+  sort(...keys: (`${Names<Row>}` | `-${Names<Row>}`)[]): Rel<Row> {
     return new Rel({ r: 'sort', input: this.node, keys: keys.map((k) => (k.startsWith('-') ? { expr: { k: 'col', name: k.slice(1) }, desc: true } : { expr: { k: 'col', name: k }, desc: false })) });
   }
-  limit(count: number, offset?: number): Rel<Row> {
-    return new Rel({ r: 'limit', input: this.node, count, ...(offset !== undefined ? { offset } : {}) });
+  /** The first `count` rows after `offset`; `fromEnd`: the last `count` rows before the last `offset`, in order. */
+  limit(count: number | Expr<number>, offset?: number | Expr<number>, options: { fromEnd?: boolean } = {}): Rel<Row> {
+    return new Rel({ r: 'limit', input: this.node, count: amount(count), ...(offset !== undefined ? { offset: amount(offset) } : {}), ...(options.fromEnd ? { fromEnd: true as const } : {}) });
   }
-  distinct(): Rel<Row> {
-    return new Rel({ r: 'distinct', input: this.node });
+  /**
+   * The distinct rows. `on`: the columns that decide which rows are duplicates (default: all); `keep`: which row of each
+   * set to keep, by input order; `ordered`: the rows in the order of their first occurrence.
+   */
+  distinct(options: { on?: readonly Names<Row>[]; keep?: 'first' | 'last'; ordered?: boolean } = {}): Rel<Row> {
+    return new Rel({
+      r: 'distinct',
+      input: this.node,
+      ...(options.on ? { on: options.on } : {}),
+      ...(options.keep ? { keep: options.keep } : {}),
+      ...(options.ordered ? { ordered: true as const } : {}),
+    });
   }
   union(other: Rel<Row>, options: { all?: boolean } = {}): Rel<Row> {
     return new Rel({ r: 'union', all: options.all ?? true, inputs: [this.node, other.node] });
+  }
+  /** The distinct rows that are also in `other`. */
+  intersect(other: Rel<Row>): Rel<Row> {
+    return new Rel({ r: 'setop', kind: 'intersect', inputs: [this.node, other.node] });
+  }
+  /** The distinct rows that are not in `other`. */
+  except(other: Rel<Row>): Rel<Row> {
+    return new Rel({ r: 'setop', kind: 'except', inputs: [this.node, other.node] });
+  }
+  /**
+   * Rows drawn at random, fixed by `seed`: `count` of them or a `fraction` of all. Without `replace` they keep their
+   * order; with it a row may be drawn more than once, in the order drawn.
+   */
+  sample(size: { count: number | Expr<number> } | { fraction: number | Expr<number> }, options: { replace?: boolean; seed?: number } = {}): Rel<Row> {
+    return new Rel({
+      r: 'sample',
+      input: this.node,
+      ...('count' in size ? { count: amount(size.count) } : { fraction: amount(size.fraction) }),
+      replace: options.replace ?? false,
+      seed: options.seed ?? 0,
+    });
+  }
+  /**
+   * One row per element of the list column `column`, which takes the element's value. An empty list gives no row
+   * (one with NULL with `emptyAsNull`), a NULL list one row with NULL (none with `keepNulls: false`). `position` names
+   * a last column with the element's position, from 0.
+   */
+  explode<K extends Names<Row>, Pos extends string = never>(
+    column: K,
+    options: { position?: Pos; emptyAsNull?: boolean; keepNulls?: boolean } = {},
+  ): Rel<Omit<Row, K> & { [P in K]: ElementOf<Row[K]> } & { [P in Pos]: number }> {
+    return new Rel({
+      r: 'explode',
+      input: this.node,
+      column,
+      ...(options.position ? { position: options.position } : {}),
+      ...(options.emptyAsNull ? { emptyAsNull: true as const } : {}),
+      ...(options.keepNulls === false ? { keepNulls: false as const } : {}),
+    });
+  }
+  /**
+   * Values of `on` as columns: one row per group of `keys`, then for each of `values` and each of `aggs` the aggregate
+   * over the group's rows whose `on` is that value. A column is named by its value (`${value}_${agg}` with more than
+   * one aggregate).
+   */
+  pivot<K extends Fields>(options: {
+    keys: (r: Cols<Row>) => K;
+    on: (r: Cols<Row>) => Expr<unknown>;
+    values: readonly Value[];
+    aggs: (r: Cols<Row>) => Fields;
+    ordered?: boolean;
+  }): Rel<RowOfFields<K> & AnyRow> {
+    const c = colsProxy<Row>();
+    return new Rel({
+      r: 'pivot',
+      input: this.node,
+      keys: fieldsOf(options.keys(c)),
+      on: options.on(c).node,
+      values: options.values,
+      aggs: fieldsOf(options.aggs(c)),
+      ...(options.ordered ? { ordered: true as const } : {}),
+    });
+  }
+  /**
+   * `columns` as rows: each row gives one row per column, with the `keep` columns (default: the others), the column's
+   * name (in `name`, default `name`) and its value (in `value`, default `value`).
+   */
+  unpivot<C extends Names<Row>, Kp extends Names<Row> = Exclude<Names<Row>, C>, N extends string = 'name', V extends string = 'value'>(
+    columns: readonly C[],
+    options: { keep?: readonly Kp[]; name?: N; value?: V } = {},
+  ): Rel<Pick<Row, Kp> & { [P in N]: string } & { [P in V]: Row[C] }> {
+    return new Rel({ r: 'unpivot', input: this.node, ...(options.keep ? { keep: options.keep } : {}), columns, name: options.name ?? 'name', value: options.value ?? 'value' });
   }
   /** The IR as JSON: what smaltts stores as a view's source. */
   toJSON(): RelNode {
@@ -127,6 +300,15 @@ export function scan(table: TableSpec<any> | string): Rel<any> {
 /** Rows given in JavaScript, with their column types. */
 export function values<Row extends AnyRow>(columns: readonly (ColumnType & { name: keyof Row & string })[], rows: readonly Row[]): Rel<Row> {
   return new Rel({ r: 'values', columns, rows: rows.map((row) => columns.map((c) => (row[c.name] ?? null) as Value | boolean)) });
+}
+
+/**
+ * Rows given as one array per column (typed arrays, arrays of values, or either with a null bitmap `{ data, nulls }`),
+ * with their column types: the engine's `values` from columns. For loads and queries; a view can't store typed arrays.
+ */
+export function fromColumns<Row extends AnyRow = AnyRow>(columns: readonly ColumnType[], data: readonly P.ValueColumn[]): Rel<Row> {
+  if (data.length !== columns.length) throw new Error(`fromColumns: ${columns.length} columns, ${data.length} arrays`);
+  return new Rel({ r: 'columns', columns, data });
 }
 
 /** A table function from a plugin (`read_csv`, …), with the columns it gives. */
@@ -222,31 +404,35 @@ function compile(n: RelNode, cat: Resolver, params: string[]): { plan: P.PlanOp;
       }
       return { plan: at(P.project(input.plan, exprs), star ? 'extend' : 'select'), fields };
     }
+    case 'columns': {
+      const types = n.columns.map(columnPlanType);
+      return { plan: at(P.fromColumns(n.data, types), 'fromColumns'), fields: n.columns.map((c, i) => ({ name: c.name, type: types[i]!, collation: 'binary' })) };
+    }
     case 'join': {
       const left = compile(n.left, cat, params);
       const right = compile(n.right, cat, params);
       const rightFields = right.fields.map((f) => ({ ...f, name: (n.prefix ?? '') + f.name }));
-      const on = n.on ? expr(n.on, [left.fields, rightFields], params, cat).e : undefined;
-      if (n.kind === 'semi' || n.kind === 'anti') return { plan: at(P.join(n.kind, left.plan, right.plan, on), `${n.kind}Join`), fields: left.fields };
+      const scopes = [left.fields, rightFields];
+      const on = n.on ? expr(n.on, scopes, params, cat).e : undefined;
+      const call = JOIN_CALL[n.kind];
+      let plan: P.PlanOp = P.join(n.kind, left.plan, right.plan, on, { ordered: !!n.ordered });
+      if (n.asof) {
+        const tolerance = n.asof.tolerance ? expr(n.asof.tolerance, [], params, cat).e : undefined;
+        plan = P.asofJoin(left.plan, right.plan, expr(n.asof.left, scopes, params, cat).e, expr(n.asof.right, scopes, params, cat).e, { direction: n.asof.direction, ...(tolerance ? { tolerance } : {}), ...(on ? { on } : {}) });
+        if (n.ordered) plan = { ...plan, ordered: true } as P.PlanOp;
+      }
+      if (n.kind === 'semi' || n.kind === 'anti') return { plan: at(plan, call), fields: left.fields };
       const names = new Set(left.fields.map((f) => f.name.toLowerCase()));
       const clash = rightFields.find((f) => names.has(f.name.toLowerCase()));
-      if (clash) throw new Error(`join: both sides have a column named ${clash.name}; give the right side a prefix`);
-      return { plan: at(P.join(n.kind, left.plan, right.plan, on), n.kind === 'left' ? 'leftJoin' : 'join'), fields: [...left.fields, ...rightFields] };
+      if (clash) throw new Error(`${call}: both sides have a column named ${clash.name}; give the right side a prefix`);
+      return { plan: at(plan, call), fields: [...left.fields, ...rightFields] };
     }
     case 'aggregate': {
       const input = compile(n.input, cat, params);
       const keys = n.keys.map(([name, node]) => ({ name, ...expr(node, [input.fields], params, cat) }));
-      const aggs = n.aggs.map(([name, node]) => {
-        if (node.k !== 'agg') throw new Error(`aggregate: ${name} is not an aggregate`);
-        const args = node.args.map((a) => expr(a, [input.fields], params, cat));
-        const def = AGGREGATE[node.name as keyof typeof AGGREGATE];
-        if (!def) throw new Error(`aggregate: no aggregate named ${node.name}`);
-        const type = (cat.resultType?.(node.name, args.map((a) => a.type)) ?? def.result) as P.PlanType;
-        const filter = node.filter ? expr(node.filter, [input.fields], params, cat).e : undefined;
-        return { name, type, call: P.agg(node.name, args.map((a) => a.e), type, { star: node.name === 'count' && args.length === 0, distinct: !!node.distinct, ...(filter ? { filter } : {}) }) };
-      });
+      const aggs = n.aggs.map(([name, node]) => ({ name, ...aggCall('aggregate', name, node, [input.fields], params, cat) }));
       return {
-        plan: at(P.aggregate(input.plan, keys.map((k) => k.e), aggs.map((a) => a.call), { collations: keys.map((k) => k.collation) }), 'aggregate'),
+        plan: at(P.aggregate(input.plan, keys.map((k) => k.e), aggs.map((a) => a.call), { collations: keys.map((k) => k.collation), ...(n.ordered ? { ordered: 'first' as const } : {}) }), 'aggregate'),
         fields: [...keys.map((k) => ({ name: k.name, type: k.type, collation: k.collation })), ...aggs.map((a) => ({ name: a.name, type: a.type, collation: 'binary' as Collation }))],
       };
     }
@@ -260,20 +446,84 @@ function compile(n: RelNode, cat: Resolver, params: string[]): { plan: P.PlanOp;
     }
     case 'limit': {
       const input = compile(n.input, cat, params);
-      return { plan: at(P.limit(input.plan, n.count, n.offset), 'limit'), fields: input.fields };
+      const count = typeof n.count === 'number' ? n.count : expr(n.count, [], params, cat).e;
+      const offset = n.offset === undefined || typeof n.offset === 'number' ? n.offset : expr(n.offset, [], params, cat).e;
+      return { plan: at(P.limit(input.plan, count, offset, { fromEnd: !!n.fromEnd }), 'limit'), fields: input.fields };
     }
     case 'distinct': {
       const input = compile(n.input, cat, params);
-      return { plan: at(P.distinct(input.plan, input.fields.length, input.fields.map((f) => f.collation)), 'distinct'), fields: input.fields };
+      const on = n.on?.map((name) => fieldIndex(input.fields, name, 'distinct'));
+      const options = { ...(n.ordered ? { ordered: 'first' as const } : {}), ...(on ? { on } : {}), ...(n.keep ? { keep: n.keep } : {}) };
+      return { plan: at(P.distinct(input.plan, input.fields.length, input.fields.map((f) => f.collation), options), 'distinct'), fields: input.fields };
     }
-    case 'union': {
+    case 'union':
+    case 'setop': {
+      const kind = n.r === 'union' ? (n.all ? 'unionAll' : 'union') : n.kind;
+      const call = n.r === 'union' ? 'union' : n.kind;
       const a = compile(n.inputs[0], cat, params);
       const b = compile(n.inputs[1], cat, params);
       const names = (fs: Field[]) => fs.map((f) => f.name.toLowerCase()).join(',');
-      if (names(a.fields) !== names(b.fields)) throw new Error(`union: the inputs have different columns (${names(a.fields)} / ${names(b.fields)})`);
-      return { plan: at(P.setop(n.all ? 'unionAll' : 'union', a.plan, b.plan, a.fields.length, a.fields.map((f) => f.collation)), 'union'), fields: a.fields };
+      if (names(a.fields) !== names(b.fields)) throw new Error(`${call}: the inputs have different columns (${names(a.fields)} / ${names(b.fields)})`);
+      return { plan: at(P.setop(kind, a.plan, b.plan, a.fields.length, a.fields.map((f) => f.collation)), call), fields: a.fields };
+    }
+    case 'sample': {
+      const input = compile(n.input, cat, params);
+      const size = (v: Amount) => (typeof v === 'number' ? v : expr(v, [], params, cat).e);
+      const plan = P.sample(input.plan, n.count !== undefined ? { count: size(n.count) } : { fraction: size(n.fraction!) }, { replace: n.replace, seed: n.seed });
+      return { plan: at(plan, 'sample'), fields: input.fields };
+    }
+    case 'explode': {
+      const input = compile(n.input, cat, params);
+      const i = fieldIndex(input.fields, n.column, 'explode');
+      const type = input.fields[i]!.type;
+      const element = /^list<(.*)>$/.exec(type)?.[1];
+      if (element === undefined) throw new Error(`explode: ${n.column} is ${type}, not a list`);
+      const fields = input.fields.map((f, j) => (j === i ? { ...f, type: element as P.PlanType } : f));
+      if (n.position) fields.push({ name: n.position, type: 'int', collation: 'binary' });
+      const plan = P.explode(input.plan, i, type, { position: !!n.position, emptyAsNull: !!n.emptyAsNull, ...(n.keepNulls === false ? { keepNulls: false } : {}) });
+      return { plan: at(plan, 'explode'), fields };
+    }
+    case 'pivot': {
+      const input = compile(n.input, cat, params);
+      const scopes = [input.fields];
+      const keys = n.keys.map(([name, node]) => ({ name, ...expr(node, scopes, params, cat) }));
+      const on = expr(n.on, scopes, params, cat);
+      const aggs = n.aggs.map(([name, node]) => ({ name, ...aggCall('pivot', name, node, scopes, params, cat) }));
+      const fields: Field[] = keys.map((k) => ({ name: k.name, type: k.type, collation: k.collation }));
+      for (const v of n.values) for (const a of aggs) fields.push({ name: aggs.length === 1 ? String(v) : `${String(v)}_${a.name}`, type: a.type, collation: 'binary' });
+      const plan = P.pivot(input.plan, keys.map((k) => k.e), on.e, n.values, aggs.map((a) => a.call), { collations: keys.map((k) => k.collation), collation: on.collation, ...(n.ordered ? { ordered: 'first' as const } : {}) });
+      return { plan: at(plan, 'pivot'), fields };
+    }
+    case 'unpivot': {
+      const input = compile(n.input, cat, params);
+      const columns = n.columns.map((name) => fieldIndex(input.fields, name, 'unpivot'));
+      const keep = n.keep ? n.keep.map((name) => fieldIndex(input.fields, name, 'unpivot')) : input.fields.map((_, i) => i).filter((i) => !columns.includes(i));
+      const types = new Set(columns.map((i) => input.fields[i]!.type));
+      const type: P.PlanType = types.size === 1 ? [...types][0]! : 'any';
+      const fields: Field[] = [...keep.map((i) => input.fields[i]!), { name: n.name, type: 'text', collation: 'binary' }, { name: n.value, type, collation: 'binary' }];
+      return { plan: at(P.unpivot(input.plan, keep, columns, columns.map((i) => input.fields[i]!.name), type), 'unpivot'), fields };
     }
   }
+}
+
+const JOIN_CALL: Record<JoinKind, string> = { inner: 'join', left: 'leftJoin', right: 'rightJoin', full: 'fullJoin', semi: 'semiJoin', anti: 'antiJoin', cross: 'crossJoin', asof: 'asofJoin' };
+
+function fieldIndex(fields: readonly Field[], name: string, call: string): number {
+  const i = fields.findIndex((f) => f.name.toLowerCase() === name.toLowerCase());
+  if (i < 0) throw new Error(`${call}: no column named ${name} (columns: ${fields.map((f) => f.name).join(', ')})`);
+  return i;
+}
+
+/** An aggregate call of `aggregate` or `pivot`. */
+function aggCall(call: string, name: string, node: ExprNode, scopes: readonly (readonly Field[])[], params: string[], cat: Resolver): { type: P.PlanType; call: P.AggCall } {
+  if (node.k !== 'agg') throw new Error(`${call}: ${name} is not an aggregate`);
+  const def = AGGREGATE[node.name as keyof typeof AGGREGATE];
+  if (!def) throw new Error(`${call}: no aggregate named ${node.name}`);
+  if (def.kind !== 'aggregate') throw new Error(`${call}: agg.${node.name} is a window function; use it in window()`);
+  const args = node.args.map((a) => expr(a, scopes, params, cat));
+  const type = (cat.resultType?.(node.name, args.map((a) => a.type)) ?? def.result) as P.PlanType;
+  const filter = node.filter ? expr(node.filter, scopes, params, cat).e : undefined;
+  return { type, call: P.agg(node.name, args.map((a) => a.e), type, { star: node.name === 'count' && args.length === 0, distinct: !!node.distinct, ...(filter ? { filter } : {}) }) };
 }
 
 /** A literal: a JavaScript boolean is a `bool` (1 / 0, ADR 0018); `type` is the column's, where one is known. */

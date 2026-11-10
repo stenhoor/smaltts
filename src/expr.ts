@@ -6,6 +6,7 @@
  */
 import { AGGREGATE, type AggregateName, SCALAR, type ScalarName } from './functions.js';
 import type { Collation, Value } from './spec.js';
+import type * as P from 'smaltdb/plan';
 
 export type ExprNode =
   | { readonly k: 'col'; readonly name: string }

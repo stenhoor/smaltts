@@ -219,7 +219,8 @@ const spend = scan(orders)
 | | | |
 |---|---|---|
 | `scan(table)` | A table's rows, by spec (typed) or by name (untyped); a name may be a view. | Prototype |
-| `values(columns, rows)` | Rows from JavaScript, with column types. | Prototype; typed-array columns planned (milestone 5) |
+| `values(columns, rows)` | Rows from JavaScript, with column types. | Prototype |
+| `fromColumns(columns, arrays)` | Rows given as one array per column: typed arrays, arrays of values, or either with a null bitmap `{ data, nulls }`. For loads and queries: a view can't store typed arrays. | Prototype |
 | `tableFunction(name, args, columns, named?)` | A plugin's table function (`read_csv`, `read_parquet`, …) with the columns it gives. | Prototype |
 | `relFromJSON(node)` | A relation from its JSON. | Prototype |
 
@@ -229,15 +230,38 @@ const spend = scan(orders)
 |---|---|---|
 | `.filter(pred)` | `filter` | Prototype |
 | `.select(fields)`, `.extend(fields)`, `.pick(...names)` | `project` | Prototype |
-| `.join`, `.leftJoin`, `.semiJoin`, `.antiJoin` (`prefix` renames the right side's columns) | `join` | Prototype |
-| `.rightJoin`, `.fullJoin`, `.crossJoin`, `.asofJoin`, `{ ordered }` | `join` | Planned (milestone 5) |
-| `.aggregate(keys, aggs)` | `aggregate` | Prototype; `{ ordered }` planned |
+| `.join`, `.leftJoin`, `.rightJoin`, `.fullJoin`, `.semiJoin`, `.antiJoin` (`(l, r) => pred`), `.crossJoin`; `{ prefix, ordered }` (`prefix` renames the right side's columns; `ordered` keeps the left order and each left row's matches in the right order) | `join` | Prototype |
+| `.asofJoin(right, (l, r) => [leftKey, rightKey], { direction?, tolerance?, on?, prefix?, ordered? })`: each row with the right row whose key is nearest its own (`backward`, the default: at or below it; `forward`; `nearest`), or NULLs | `join` (`asof`) | Prototype |
+| `.aggregate(keys, aggs, { ordered? })` (`ordered`: groups in the order of their first row) | `aggregate` | Prototype |
 | `.sort('-col', 'col')` | `sort` (stable) | Prototype |
-| `.limit(n, offset?)` | `limit` | Prototype; `{ fromEnd }` planned |
-| `.distinct()` | `distinct` | Prototype; `{ keep }` planned |
-| `.union(other, { all? })` | `setop` | Prototype |
-| `.intersect`, `.except`, `.window(…)`, `iterate(seed, step)`, `.pivot`, `.unpivot`, `.sample`, `.explode` | `setop`, `window`, `iterate`, `pivot`, `unpivot`, `sample`, `explode` | Planned (milestone 5) |
+| `.limit(n, offset?, { fromEnd? })` (`n` and `offset` may be parameters; `fromEnd`: the last `n` rows before the last `offset`, in order) | `limit` | Prototype |
+| `.distinct({ on?, keep?, ordered? })` (`on`: the columns that decide duplicates; `keep`: `'first'` or `'last'` of each set) | `distinct` | Prototype |
+| `.union(other, { all? })`, `.intersect(other)`, `.except(other)` | `setop` | Prototype |
+| `.sample({ count } \| { fraction }, { replace?, seed? })` | `sample` | Prototype |
+| `.explode(column, { position?, emptyAsNull?, keepNulls? })`: one row per element of a list column (`position` names a column with the element's position) | `explode` | Prototype |
+| `.pivot({ keys, on, values, aggs, ordered? })`: a column per value of `on` (named by the value, or `value_agg` with more than one aggregate) | `pivot` | Prototype |
+| `.unpivot(columns, { keep?, name?, value? })`: a row per column, with its name and value (`keep` defaults to the other columns) | `unpivot` | Prototype |
+| `.window(…)`, `iterate(seed, step)`, subqueries | `window`, `iterate`, the subquery expressions | Planned (milestone 5) |
 | `.toJSON()` | The relation's JSON (what a view stores). | Prototype |
+
+Names resolve when the plan is compiled; an error names the call (`except: the inputs have different columns …`).
+
+```ts
+import assert from 'node:assert/strict';
+import { Database } from 'smaltdb/engine';
+import { agg, attach, int, list, scan, table, text } from '@smaltworks/smaltts';
+
+const posts = table('posts', { id: int().primaryKey(), author: text(), tags: list(text()) });
+const db = attach(Database.openMemory());
+await db.migrate({ tables: [posts] });
+await db.load(posts, [{ id: 1, author: 'ann', tags: ['db', 'ts'] }, { id: 2, author: 'bo', tags: ['db'] }]);
+
+// One row per tag, then a column per author.
+const byTag = scan(posts)
+  .explode('tags')
+  .pivot({ keys: (r) => ({ tag: r.tags }), on: (r) => r.author, values: ['ann', 'bo'], aggs: () => ({ n: agg.count() }), ordered: true });
+assert.deepEqual(await db.rows(byTag), [{ tag: 'db', ann: 1, bo: 1 }, { tag: 'ts', ann: 1, bo: 0 }]);
+```
 
 ### Expressions
 
