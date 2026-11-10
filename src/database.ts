@@ -7,6 +7,7 @@ import type { PlanStatementInput } from 'smaltdb/plan';
 import { type Backend, type ClientDatabase, type EngineDatabase, backendOf } from './backend.js';
 import { type Catalog, readCatalog } from './catalog.js';
 import { type Applied, type ApplyPolicy, type ChangeSet, type DiffOptions, apply, diff } from './changes.js';
+import { type Migrated, type NamedFile, migrateFiles } from './files.js';
 import { LANGUAGE, type ViewSource } from './source.js';
 import { type Cols, type Compiled, Expr, type Field, Rel, compileRel, expr } from './rel.js';
 import { toIndexDef, toTableDef } from './ddl.js';
@@ -62,6 +63,17 @@ export class SmaltDb {
   async apply(changes: ChangeSet, policy?: ApplyPolicy): Promise<Applied> {
     try {
       return await apply(this.backend, changes, policy);
+    } finally {
+      this.cached = undefined;
+    }
+  }
+  /**
+   * Replay saved change-set files (`changeSetFile`) the database hasn't applied, in name order: see files.ts. Files
+   * are given by name and text; read a directory with `node:fs` or a bundler's glob.
+   */
+  async migrateFiles(files: readonly NamedFile[], policy?: ApplyPolicy): Promise<Migrated> {
+    try {
+      return await migrateFiles(this.backend, files, policy);
     } finally {
       this.cached = undefined;
     }

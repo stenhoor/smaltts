@@ -169,7 +169,9 @@ await db.apply(changes, { allowDataLoss: 'none', label: 'v1' });
 | `db.apply(changes, policy?)` | Runs a change set in one transaction if the policy allows it, and records it in `smaltts_history`. Takes a change set parsed from JSON as it is. | Prototype |
 | `db.migrate(desired, policy?)` | `diff`, then `apply`. | Prototype |
 | `describe(changes)` | The change set as text, for review. | Prototype |
-| `db.migrateFiles(dir)` | Replays saved change-set files in order, refusing edited ones. | Planned (milestone 4) |
+| `changeSetFile(changes, schema)` | A change set to save as a file, with the schema it leads to (the `desired` it was diffed against) and a checksum of both. `JSON.stringify` it. | Prototype |
+| `parseChangeSetFile(text, name?)` | A file's text as a `ChangeSetFile`; refuses text that isn't one, or one edited after it was saved. | Prototype |
+| `db.migrateFiles(files, policy?)` | Replays the saved files (`{ name, text }[]`) the database hasn't applied, in name order, each in its own transaction, and returns `{ applied, skipped, drift }`. | Prototype |
 
 **`ChangeSet`:** `{ steps, diagnostics, impact, dataLoss, checksum }`, JSON. Each step is `{ action, object, impact,
 dataLoss, reason, statements }`, where `statements` are the engine statements it runs.
@@ -202,6 +204,43 @@ rebuilt through a row-storage staging table (smaltdb finding F4).
 | An interface's column changes type: lossless to its type / otherwise | `warning` / `error` | |
 | A reflecting view's columns change (renamed, added, dropped, retyped) | `info`, with the old and new columns | `replaceView` if materialized |
 | A view reads a column a rebuild renames (the engine edits only in-place renames) | | `replaceView` |
+
+**Saved change sets** (gate A: live diff, and saved change sets as well). CI saves each reviewed change set as a file;
+every database replays the files it hasn't applied, so each runs exactly the reviewed steps. `migrateFiles` refuses:
+
+- a file edited after it was saved (its checksum), or one changed since it was applied (the history's checksum);
+- a file that sorts before one already applied (added out of order);
+- a database that has drifted from the history: before a file runs, the database must have the previous file's schema
+  (an empty one before the first), compared with `prune`, so a table added outside the files is drift.
+
+After the last file, `drift` is the change set from the database to that file's schema: no steps when they agree. The
+history table records each file's name and checksum. The default policy allows what the reviewed files do; pass one
+to refuse more. Files are given by name and text, so smaltts uses no file API: in Node, read a directory with
+`readdirSync(dir).map((name) => ({ name, text: readFileSync(join(dir, name), 'utf8') }))`.
+
+```ts
+import assert from 'node:assert/strict';
+import { Database } from 'smaltdb/engine';
+import { attach, changeSetFile, int, real, table, text } from '@smaltworks/smaltts';
+
+const v1 = { tables: [table('orders', { id: int().primaryKey(), total: real().notNull() })] };
+const v2 = { tables: [table('orders', { id: int().primaryKey(), amount: real().notNull().renamedFrom('total'), note: text() })] };
+
+// In CI: diff a development database against each version, and save each change set.
+const dev = attach(Database.openMemory());
+const files = [];
+for (const [i, desired] of [v1, v2].entries()) {
+  const changes = await dev.diff(desired);
+  files.push({ name: `000${i + 1}.json`, text: JSON.stringify(changeSetFile(changes, desired)) });
+  await dev.apply(changes);
+}
+
+// Wherever the application runs: replay what this database hasn't applied.
+const db = attach(Database.openMemory());
+await db.migrateFiles(files.slice(0, 1));
+const { applied, skipped, drift } = await db.migrateFiles(files);
+assert.deepEqual([skipped, applied, drift.steps], [['0001.json'], ['0002.json'], []]);
+```
 
 **`ApplyPolicy`:** `{ allowDataLoss?: 'none' | 'possible' | 'certain', maxImpact?: Impact, label?: string }`.
 `allowDataLoss` defaults to `none`. A change set with error diagnostics is refused.

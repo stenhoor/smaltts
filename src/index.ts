@@ -15,3 +15,4 @@ export { type ExplainNode, type Explained, type LoadMode, type AsText, SmaltDb, 
 export { type Backend, type Result, type RunOptions, engineBackend, clientBackend, backendOf } from './backend.js';
 export { LANGUAGE, type ViewSource } from './source.js';
 export { renameColumnIn, renameTableIn, tablesOf } from './views.js';
+export { type ChangeSetFile, type Migrated, type NamedFile, changeSetFile, parseChangeSetFile, migrateFiles } from './files.js';
