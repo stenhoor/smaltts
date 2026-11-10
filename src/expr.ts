@@ -4,12 +4,17 @@
  * meaning (`.eq` is `cmp_eq`, `.and` the logic node), as ADR 0023 decides. Relations (`rel.ts`), specs' CHECKs and
  * defaults (`spec.ts`) and DDL (`ddl.ts`) all build on them.
  */
-import { AGGREGATE, type AggregateName, SCALAR, type ScalarName } from './functions.js';
+import { AGGREGATE, SCALAR, type ScalarName } from './functions.js';
 import type { Collation, Value } from './spec.js';
 import type * as P from 'smaltdb/plan';
+import type { RelNode } from './rel.js';
 
 export type ExprNode =
-  | { readonly k: 'col'; readonly name: string }
+  /**
+   * A column by name. `outer`: of the operation `outer` subqueries out (a correlated reference). `scope` is transient:
+   * the relation builder that made the reference, removed when that builder's call returns.
+   */
+  | { readonly k: 'col'; readonly name: string; readonly outer?: number; readonly scope?: number }
   /** A literal; `date: true` marks a JavaScript `Date`, kept as ISO text and typed by what it is compared with. */
   | { readonly k: 'lit'; readonly value: Value | boolean; readonly date?: true }
   | { readonly k: 'param'; readonly name: string; readonly type: P.PlanType }
@@ -17,7 +22,13 @@ export type ExprNode =
   | { readonly k: 'and' | 'or'; readonly args: readonly ExprNode[] }
   | { readonly k: 'not'; readonly arg: ExprNode }
   | { readonly k: 'isNull'; readonly arg: ExprNode; readonly not: boolean }
-  | { readonly k: 'agg'; readonly name: string; readonly args: readonly ExprNode[]; readonly distinct?: boolean; readonly filter?: ExprNode };
+  | { readonly k: 'agg'; readonly name: string; readonly args: readonly ExprNode[]; readonly distinct?: boolean; readonly filter?: ExprNode; readonly ignoreNulls?: true }
+  /** Searched CASE: the first `when` that is true gives the value, else `else` (NULL if absent). */
+  | { readonly k: 'case'; readonly whens: readonly { readonly when: ExprNode; readonly then: ExprNode }[]; readonly else?: ExprNode }
+  /** Subqueries: whether the relation has a row; its first row's single column; whether `probe` is in its column. */
+  | { readonly k: 'exists'; readonly rel: RelNode }
+  | { readonly k: 'scalar'; readonly rel: RelNode }
+  | { readonly k: 'inRel'; readonly probe: ExprNode; readonly rel: RelNode };
 
 /** A column of a source given in the plan: its name, storage type and, for a list or struct, its full plan type. */
 
@@ -55,8 +66,11 @@ export class Expr<T> {
   is(other: Arg<T | null>): Expr<boolean> { return this.call('cmp_is', other); }
   /** `cmp_is_not` */
   isNot(other: Arg<T | null>): Expr<boolean> { return this.call('cmp_is_not', other); }
-  /** `in_list` */
-  in(values: readonly Arg<T>[]): Expr<boolean | null> { return this.call('in_list', ...values); }
+  /** `in_list` with a list of values; with a relation of one column, the `inSubquery` node (1, 0 or NULL). */
+  in(values: readonly Arg<T>[] | OneColumn<T>): Expr<boolean | null> {
+    if (!Array.isArray(values)) return new Expr({ k: 'inRel', probe: this.node, rel: (values as OneColumn<T>).node });
+    return this.call('in_list', ...(values as readonly Arg<T>[]));
+  }
   /** `like` */
   like(pattern: Arg<string>): Expr<boolean | null> { return this.call('like', pattern); }
   /** `glob` */
@@ -88,6 +102,23 @@ export const and = (...preds: Arg<Truth>[]): Expr<boolean | null> => new Expr({ 
 export const or = (...preds: Arg<Truth>[]): Expr<boolean | null> => new Expr({ k: 'or', args: preds.map(toNode) });
 export const not = (pred: Arg<Truth>): Expr<boolean | null> => new Expr({ k: 'not', arg: toNode(pred) });
 
+/** A relation whose rows have one column of `T`, as subqueries take (`Rel` is one). */
+export interface OneColumn<T> {
+  readonly node: RelNode;
+  readonly $row: Record<string, T>;
+}
+
+/** Whether `rel` has a row: the `exists` subquery (1 or 0). Its callbacks may read the enclosing rows' columns. */
+export const exists = (rel: { readonly node: RelNode }): Expr<number> => new Expr({ k: 'exists', rel: rel.node });
+
+/** The single column of `rel`'s first row, or NULL if it has none: the scalar subquery. */
+export const scalar = <T>(rel: OneColumn<T>): Expr<T | null> => new Expr({ k: 'scalar', rel: rel.node });
+
+/** Searched CASE: the first `when` that is true gives its `then`, else `otherwise` (default NULL). */
+export function caseWhen<T>(whens: readonly (readonly [Arg<Truth>, Arg<T>])[], otherwise?: Arg<T>): Expr<T | null> {
+  return new Expr({ k: 'case', whens: whens.map(([w, t]) => ({ when: toNode(w), then: toNode(t) })), ...(otherwise !== undefined ? { else: toNode(otherwise) } : {}) });
+}
+
 /** Every engine operation and scalar function, by its engine name: `fn.div_float(o.total, 2)`. */
 export const fn: { readonly [K in ScalarName]: (...args: Arg<any>[]) => Expr<TsOf<(typeof SCALAR)[K]> | null> } = new Proxy({} as never, {
   get: (_, name) => (typeof name === 'string' && name in SCALAR ? (...args: unknown[]) => new Expr({ k: 'fn', name, args: args.map(toNode) }) : undefined),
@@ -105,16 +136,24 @@ export const param = {
 };
 
 /**
- * Every engine aggregate, by its engine name, for `Rel.aggregate`: `agg.sum(o.total)`, `agg.count()` (rows),
+ * Every engine aggregate and window function, by its engine name: aggregates for `Rel.aggregate` and `pivot`, both for
+ * `Rel.window`: `agg.sum(o.total)`, `agg.count()` (rows),
  * `agg.count(e, { distinct: true })`.
  */
-export const agg: { readonly [K in AggregateName]: (...args: (Arg<any> | AggOptions)[]) => Expr<TsOf<(typeof AGGREGATE)[K]['result']> | null> } = new Proxy({} as never, {
+export const agg: { readonly [K in keyof typeof AGGREGATE]: (...args: (Arg<any> | AggOptions)[]) => Expr<TsOf<(typeof AGGREGATE)[K]['result']> | null> } = new Proxy({} as never, {
   get: (_, name) =>
     typeof name === 'string' && name in AGGREGATE
       ? (...args: unknown[]) => {
           const last = args[args.length - 1];
           const options = last && typeof last === 'object' && !(last instanceof Expr) && !(last instanceof Uint8Array) ? (args.pop() as AggOptions) : {};
-          return new Expr({ k: 'agg', name, args: args.map(toNode), ...(options.distinct ? { distinct: true } : {}), ...(options.filter ? { filter: options.filter.node } : {}) });
+          return new Expr({
+            k: 'agg',
+            name,
+            args: args.map(toNode),
+            ...(options.distinct ? { distinct: true } : {}),
+            ...(options.filter ? { filter: options.filter.node } : {}),
+            ...(options.ignoreNulls ? { ignoreNulls: true as const } : {}),
+          });
         }
       : undefined,
 });
@@ -123,6 +162,8 @@ export interface AggOptions {
   readonly distinct?: boolean;
   /** Only the rows where this is true count. */
   readonly filter?: Expr<Truth>;
+  /** In `window()`, for `lag`, `lead`, `first_value`, `last_value` and `nth_value`: count only rows whose value is not NULL. */
+  readonly ignoreNulls?: boolean;
 }
 
 

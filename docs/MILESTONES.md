@@ -90,8 +90,8 @@ Size: S if gate A chooses live diff only (a drift check only), M otherwise.
 ## 5. Typed plans, the full format
 
 Size: M. Status: in progress: the relation operations (joins of every kind, set operations, `limit` from the end,
-`distinct` keeping a row, ordered aggregates, sample, explode, pivot, unpivot, values from columns) in review; windows,
-subqueries, `iterate` and the table of signatures next.
+`distinct` keeping a row, ordered aggregates, sample, explode, pivot, unpivot, values from columns; stenhoor/smaltts#10)
+and windows, subqueries (correlated at any depth), `iterate` and CASE (in review); the table of signatures next.
 
 - A builder for each plan operation (DESIGN.md section 7): windows, set operations, subqueries, `iterate`, pivot and
   unpivot, asof joins, sample, explode, ordered joins and aggregates, `limit` from the end, `distinct` keeping a row.

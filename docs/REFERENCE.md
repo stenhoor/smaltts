@@ -241,10 +241,33 @@ const spend = scan(orders)
 | `.explode(column, { position?, emptyAsNull?, keepNulls? })`: one row per element of a list column (`position` names a column with the element's position) | `explode` | Prototype |
 | `.pivot({ keys, on, values, aggs, ordered? })`: a column per value of `on` (named by the value, or `value_agg` with more than one aggregate) | `pivot` | Prototype |
 | `.unpivot(columns, { keep?, name?, value? })`: a row per column, with its name and value (`keep` defaults to the other columns) | `unpivot` | Prototype |
-| `.window(…)`, `iterate(seed, step)`, subqueries | `window`, `iterate`, the subquery expressions | Planned (milestone 5) |
+| `.window((r) => calls, { partition?, order?, frame? })`: every column, then one per call (`agg.row_number()`, `agg.lag(r.x, { ignoreNulls: true })`, `agg.sum(r.x)`, …). `partition` lists columns, `order` takes `sort`'s keys, `frame` is the engine's (`{ unit: 'ROWS', start: { kind: 'preceding', offset: 1 }, end: { kind: 'currentRow' } }`) | `window` | Prototype |
+| `iterate(init, (previous) => step, { distinct?, name? })`: `init`'s rows, then the step's over the rows the previous step gave, until a step gives none (`distinct` drops rows given before) | `iterate`, `working` | Prototype |
 | `.toJSON()` | The relation's JSON (what a view stores). | Prototype |
 
 Names resolve when the plan is compiled; an error names the call (`except: the inputs have different columns …`).
+
+Subqueries read the enclosing rows' columns by closure, at any depth; the JSON records the depth (`{ "k": "col",
+"name": "id", "outer": 1 }`):
+
+```ts
+import assert from 'node:assert/strict';
+import { Database } from 'smaltdb/engine';
+import { agg, attach, exists, int, scan, table, text } from '@smaltworks/smaltts';
+
+const authors = table('authors', { id: int().primaryKey(), name: text() });
+const books = table('books', { id: int().primaryKey(), authorId: int(), year: int() });
+const db = attach(Database.openMemory());
+await db.migrate({ tables: [authors, books] });
+await db.load(authors, [{ id: 1, name: 'ann' }, { id: 2, name: 'bo' }]);
+await db.load(books, [{ id: 1, authorId: 1, year: 2001 }, { id: 2, authorId: 1, year: 2010 }]);
+
+// Authors with a book, and each book's place among its author's, newest first.
+const published = scan(authors).filter((a) => exists(scan(books).filter((b) => b.authorId.eq(a.id))));
+assert.deepEqual(await db.rows(published), [{ id: 1, name: 'ann' }]);
+const ranked = scan(books).window(() => ({ place: agg.row_number() }), { partition: ['authorId'], order: ['-year'] });
+assert.deepEqual((await db.rows(ranked)).map((b) => b.place), [2, 1]);
+```
 
 ```ts
 import assert from 'node:assert/strict';
@@ -275,7 +298,9 @@ Callbacks receive the row's columns as typed expressions (`Expr<T>`): a misspelt
 | `.collate(c)` | the collation a comparison compares text by | Prototype |
 | `lit(v)`, `col(name)` | a literal (a JavaScript boolean is a `bool`; a `Date` is a `date` or a `datetime`, whichever it is compared with), a column by name | Prototype |
 | `param.int(name)`, `.real`, `.text`, `.bool`, `.date`, `.datetime`, `.any` | a named parameter, given when the plan runs (a `Date` for `.date` and `.datetime`) | Prototype |
-| `agg.<name>(...args, { distinct?, filter? })`: every engine aggregate by its engine name (`agg.sum`, `agg.count()` for rows, `agg.first`, `agg.median`, `agg.implode`, …) | the aggregate itself | Prototype |
+| `agg.<name>(...args, { distinct?, filter?, ignoreNulls? })`: every engine aggregate and window function by its engine name (`agg.sum`, `agg.count()` for rows, `agg.first`, `agg.median`, `agg.implode`; in `window()` also `agg.row_number`, `agg.rank`, `agg.lag`, `agg.lead`, …) | the aggregate or window call itself | Prototype |
+| `caseWhen([[when, then], …], otherwise?)` | the `case` node | Prototype |
+| `exists(rel)`, `scalar(rel)`, `x.in(rel)`: subqueries, whose callbacks may read the enclosing rows' columns (a correlated reference, at any depth) | the `subquery` and `inSubquery` nodes | Prototype |
 
 **Aliases only where an operation has one meaning** (ADR 0023, owner's decision 15). Arithmetic (`fn.add` or
 `fn.add_checked`), division (`fn.div_float`, `fn.div_trunc`, `fn.div_floor`), case (`fn.lower` or `fn.lower_unicode`)
