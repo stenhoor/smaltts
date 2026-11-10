@@ -19,7 +19,8 @@
       "smaltdb/language": ["./node_modules/smaltdb/src/engine/language-support.ts"],
       "smaltdb/worker-runtime": ["./node_modules/smaltdb/src/engine/worker-runtime.ts"],
       "smaltdb-src/*": ["./node_modules/smaltdb/src/*"],
-      "@smaltworks/smaltts": ["./src/index.ts"]
+      "@smaltworks/smaltts": ["./src/index.ts"],
+      "@smaltworks/smaltts/language": ["./src/language.ts"]
     }
   },
   "include": ["src", "test"]

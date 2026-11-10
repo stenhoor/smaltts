@@ -1,6 +1,7 @@
 import { beforeAll, describe as group, expect, test } from 'vitest';
 import { Database } from 'smaltdb/engine';
-import { agg, attach, describe, inferTable, int, param, real, registerSmaltts, scan, table, text, values } from '../src/index.js';
+import { agg, attach, describe, fn, inferTable, int, param, real, scan, table, text, values } from '../src/index.js';
+import { registerSmaltts } from '../src/language.js';
 
 beforeAll(() => registerSmaltts());
 
@@ -116,10 +117,11 @@ group('plans: relations, loads, views, explain', () => {
     expect(rows).toHaveLength(2);
   });
 
-  test('div is float division, intDiv truncates', async () => {
+  test('expressions are the engine operations, by their engine names', async () => {
     const db = await fresh();
     await db.load(orders, [{ customerId: 7, total: 1 }]);
-    expect(await db.rows(scan(orders).select((o) => ({ d: o.customerId.div(2), i: o.customerId.intDiv(2) })))).toEqual([{ d: 3.5, i: 3 }]);
+    const rel = scan(orders).select((o) => ({ d: fn.div_float(o.customerId, 2), i: fn.div_trunc(o.customerId, 2), m: fn.mod_floor(-7, 2), big: o.customerId.gt(5) }));
+    expect(await db.rows(rel)).toEqual([{ d: 3.5, i: 3, m: 1, big: true }]);
   });
 
   test('a materialized view stored as a smaltts relation, refreshed by the engine', async () => {
@@ -153,15 +155,14 @@ group('plans: relations, loads, views, explain', () => {
     expect((await db.catalog({ fresh: true })).view('big')).toMatchObject({ input: { input: { r: 'scan', table: 'orders' } }, fields: [['customerId', { k: 'col', name: 'buyer' }], ['total', { k: 'col', name: 'total' }]] });
   });
 
-  // Engine finding F1 (docs/DESIGN.md): the first materialized view creates the system table smalt_matview from SQL
-  // text, so every later RENAME COLUMN asks the sql language to edit it. Flips to passing when smaltdb fixes it.
-  test.fails('ALTER TABLE edits smaltts sources: a rename keeps materialized views working', async () => {
+  // Engine finding F1 (renames failed once a materialized view existed) is fixed in smaltdb (ADR 0017 §4).
+  test('ALTER TABLE edits smaltts sources: a rename keeps materialized views working', async () => {
     const db = await fresh();
     await db.load(orders, [{ customerId: 1, total: 10 }]);
     await db.createView('big', scan(orders).filter((o) => o.total.gt(5)).pick('customerId', 'total'), { materialized: true });
     await db.migrate({ tables: [customers, table('orders', { id: int().primaryKey(), buyer: int().notNull().renamedFrom('customerId').indexed(), total: real().notNull() }, { renamedFrom: 'orders' })] });
     await db.refresh('big');
-    expect(await db.rows(scan('big'))).toEqual([{ buyer: 1, total: 10 }]);
+    expect(await db.rows(scan('big'))).toEqual([{ customerId: 1, total: 10 }]);
   });
 
   test('explain gives the physical plan as a tree; analyze measures it', async () => {
@@ -176,9 +177,17 @@ group('plans: relations, loads, views, explain', () => {
     expect(String(run)).toMatch(/est \d+ rows/);
   });
 
+  test("an engine error names the smaltts call it came from (origin)", async () => {
+    const db = await fresh();
+    await db.load(orders, [{ customerId: 1, total: 10 }]);
+    const overflow = scan(orders).select((o) => ({ n: fn.add_checked(o.customerId, 9223372036854775807n) }));
+    const error = await db.rows(overflow).then(() => null, (e: unknown) => e as { origin?: unknown });
+    expect(error?.origin).toEqual({ smaltts: 'fn.add_checked' });
+  });
+
   test('relations are JSON: what views store and toolchains exchange', () => {
     const rel = scan(orders).filter((o) => o.total.gt(5)).pick('id');
-    expect(JSON.parse(JSON.stringify(rel))).toEqual({ r: 'select', input: { r: 'filter', input: { r: 'scan', table: 'orders' }, pred: { k: 'op', op: 'gt', args: [{ k: 'col', name: 'total' }, { k: 'lit', value: 5 }] } }, fields: [['id', { k: 'col', name: 'id' }]] });
+    expect(JSON.parse(JSON.stringify(rel))).toEqual({ r: 'select', input: { r: 'filter', input: { r: 'scan', table: 'orders' }, pred: { k: 'fn', name: 'cmp_gt', args: [{ k: 'col', name: 'total' }, { k: 'lit', value: 5 }] } }, fields: [['id', { k: 'col', name: 'id' }]] });
   });
 
   // Compile-time checks: each @ts-expect-error line must be a type error. No checker runs them yet: smaltts has no

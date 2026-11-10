@@ -7,7 +7,7 @@
  * Both take plans (`queryPlan`) and plugin calls (`callPlugin`). smaltts imports only types from smaltdb, so it adds no
  * engine to a page that builds plans.
  */
-import type { PlanStatementInput } from 'smaltdb/plan';
+import type { CatalogData, PlanStatementInput, PlanType } from 'smaltdb/plan';
 import type { Value } from './spec.js';
 
 export interface Result {
@@ -20,6 +20,10 @@ export interface Backend {
   /** Run `fn` in one transaction: every statement it runs commits together, or none does. */
   transaction<T>(fn: (tx: Backend) => Promise<T>): Promise<T>;
   callPlugin(plugin: string, method: string, args: unknown[]): Promise<unknown>;
+  /** The database's catalog as plain data (ADR 0016 section 7). */
+  catalog(): Promise<CatalogData>;
+  /** The engine's result type of a function for these argument types; in process only (the client has no lookup). */
+  resultType?(name: string, args: readonly PlanType[]): PlanType | undefined;
   readonly kind: 'engine' | 'client';
 }
 
@@ -28,6 +32,7 @@ export interface EngineDatabase {
   queryPlanAsync(stmt: PlanStatementInput, params?: readonly Value[], options?: { signal?: AbortSignal }): Promise<{ columns: string[]; rows: Value[][] }>;
   callPlugin(plugin: string, method: string, args: unknown[]): Promise<unknown>;
   readonly inTransaction: boolean;
+  readonly catalog: { snapshot(): CatalogData; resultType(name: string, args: readonly PlanType[]): PlanType | undefined };
 }
 
 /** What the client `Database` and its transaction handles share, as far as smaltts uses it. */
@@ -37,6 +42,7 @@ export interface ClientQueryable {
 export interface ClientDatabase extends ClientQueryable {
   transaction<T>(fn: (tx: ClientQueryable) => Promise<T>): Promise<T>;
   callPlugin(plugin: string, method: string, args: unknown[]): Promise<unknown>;
+  catalog(): Promise<CatalogData>;
 }
 
 export function engineBackend(db: EngineDatabase): Backend {
@@ -44,6 +50,8 @@ export function engineBackend(db: EngineDatabase): Backend {
     kind: 'engine',
     run: (stmt, params, options) => db.queryPlanAsync(stmt, params, options),
     callPlugin: (plugin, method, args) => db.callPlugin(plugin, method, args),
+    catalog: async () => db.catalog.snapshot(),
+    resultType: (name, args) => db.catalog.resultType(name, args),
     async transaction(fn) {
       // Nested transactions become savepoints, so a step can roll back alone.
       const nested = db.inTransaction;
@@ -73,6 +81,7 @@ export function clientBackend(db: ClientDatabase): Backend {
       return { columns: rows.columns, rows };
     },
     callPlugin: (plugin, method, args) => db.callPlugin(plugin, method, args),
+    catalog: () => db.catalog(),
     // The client serializes transactions per connection; inside one, a nested call runs in the same transaction.
     transaction: (fn) => (inTx ? fn(over(q, true)) : db.transaction((tx) => fn(over(tx, true)))),
   });

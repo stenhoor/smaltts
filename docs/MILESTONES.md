@@ -38,7 +38,7 @@ smaltts in its scope as well as smaltdf.
 
 ## 1. Re-base on smaltdb 0.9.0
 
-Size: M. Needs milestone 0.
+Size: M. Needs milestone 0. Status: done, 2026-11-10: pinned to smaltdb `1ce660a`; 39 tests, none registering SQL.
 
 - Pin smaltdb `main` (0.9.0, feature-complete), and follow its pin to the published `@smaltworks/smaltdb` when it is
   out.
@@ -161,7 +161,7 @@ Size: M. Needs smaltdb's 0.9.0 publish.
 |---|---|---|---|
 | 0 | Outside code | S | done (2026-11-10) |
 | — | smaltty's checker covers smaltts | L (smaltty) | smaltty's own milestones |
-| 1 | Re-base | M | 0 |
+| 1 | Re-base | M | done (2026-11-10) |
 | 2 | Types in specs | M | 1 |
 | 3 | Diff complete | L | 1, smaltdb catalog PR (S) |
 | 4 | Saved change sets | S–M | gate A |

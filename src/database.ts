@@ -7,7 +7,7 @@ import type { PlanStatementInput } from 'smaltdb/plan';
 import { type Backend, type ClientDatabase, type EngineDatabase, backendOf } from './backend.js';
 import { type Catalog, readCatalog } from './catalog.js';
 import { type Applied, type ApplyPolicy, type ChangeSet, type DiffOptions, apply, diff } from './changes.js';
-import { LANGUAGE, type ViewSource } from './language.js';
+import { LANGUAGE, type ViewSource } from './source.js';
 import { type Cols, type Compiled, Expr, type Field, Rel, compileRel, expr } from './rel.js';
 import { type SchemaSpec, type StorageType, type TableSpec, type Value, columnIndex, planTypeOf, toIndexDef, toTableDef } from './spec.js';
 
@@ -41,7 +41,10 @@ export interface Explained {
 
 export class SmaltDb {
   private cached: Catalog | undefined;
-  constructor(readonly backend: Backend) {}
+  readonly backend: Backend;
+  constructor(backend: Backend) {
+    this.backend = backend;
+  }
 
   // ----- Catalog and schema -----
 
@@ -145,12 +148,12 @@ export class SmaltDb {
       if (mode === 'swap') {
         const next = { ...target, name: `${target.name}__smaltts_swap`, indexes: [] };
         await tx.run({ kind: 'schema', op: { op: 'drop', objectType: 'table', name: next.name, ifExists: true } });
-        await tx.run({ kind: 'schema', op: { op: 'createTable', table: toTableDef(next), temp: false, ifNotExists: false, source: { language: LANGUAGE, text: JSON.stringify(next) } } });
+        await tx.run({ kind: 'schema', op: { op: 'createTable', table: toTableDef(next), temp: false, ifNotExists: false } });
         await tx.run(write(next.name, false), bind(c, {}));
         await tx.run({ kind: 'schema', op: { op: 'drop', objectType: 'table', name: target.name, ifExists: false } });
-        await tx.run({ kind: 'schema', op: { op: 'alterTable', table: next.name, action: { kind: 'renameTable', newName: target.name }, source: { language: LANGUAGE, text: JSON.stringify(target) } } });
+        await tx.run({ kind: 'schema', op: { op: 'alterTable', table: next.name, action: { kind: 'renameTable', newName: target.name } } });
         for (const ix of target.indexes ?? []) {
-          await tx.run({ kind: 'schema', op: { op: 'createIndex', index: toIndexDef(target, ix), ifNotExists: false, source: { language: LANGUAGE, text: JSON.stringify(ix) } } });
+          await tx.run({ kind: 'schema', op: { op: 'createIndex', index: toIndexDef(target, ix), ifNotExists: false } });
         }
         rows = await countIn(tx, target.name);
         return;

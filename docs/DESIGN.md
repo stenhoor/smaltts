@@ -2,7 +2,7 @@
 
 - **Status:** proposed, for the owner's review. Revised 2026-11-08 against smaltdb `9cd575c` (0.9.0, feature-complete,
   not yet published) and smaltdf after its rebuild on plans. Decisions are recorded in section 14; the order of work is
-  in [MILESTONES.md](MILESTONES.md). A prototype of sections 4–10 is in `src/`, pinned to smaltdb `0b36f33` (section 13).
+  in [MILESTONES.md](MILESTONES.md). A prototype of sections 4–10 is in `src/`, pinned to smaltdb 0.9.0 (`1ce660a`) (section 13).
 - **Date:** 2026-11-06, revised 2026-11-08
 - **Builds on:** smaltdb [ADR 0014](https://github.com/stenhoor/smaltdb/blob/main/docs/adr/0014-shared-plan-layer.md)
   (the shared plan layer) and [ADR 0015](https://github.com/stenhoor/smaltdb/blob/main/docs/adr/0015-smaltql.md)
@@ -80,7 +80,8 @@ because what it offers is engine-native and has no equivalent in either sibling:
 
 ```ts
 import { Database } from 'smaltdb/engine';          // or: import { open } from 'smaltdb' (worker client)
-import { attach, registerSmaltts } from '@smaltworks/smaltts';
+import { attach } from '@smaltworks/smaltts';
+import { registerSmaltts } from '@smaltworks/smaltts/language';
 
 registerSmaltts();                                   // in-process; in a worker: defineWorker({ languages: [smalttsLanguage] })
 const db = attach(Database.openMemory());            // any engine or client Database
@@ -231,7 +232,7 @@ by rule:
   `aggregate` (with `ordered`), `window`, `sort`, `limit` (with `fromEnd`), `distinct` (with `keep`), `setop`,
   `iterate`, `pivot`, `unpivot`, `sample`, `explode`.
 - **Expressions are the engine's operations**, by their engine names and with the result types the catalog gives
-  (`catalog.resultType`). `o.total.div(2)` is not available as a smaltts-defined meaning: the operation is chosen
+  (`catalog.resultType`). There is no smaltts-defined division: the operation is chosen
   explicitly, as `fn.div_float(o.total, 2)` or `fn.div_trunc(…)`, with short typed aliases only where an operation
   has one meaning (`eq` is `cmp_eq`, `and` is the logic node). The full set comes from the engine's function list, so
   a new engine operation is available without a smaltts release (typed loosely until smaltts's table of signatures
@@ -441,12 +442,14 @@ asof joins, sample, `ignoreNulls`, explode).
 
 ## 13. Prototype status
 
-The prototype (`src/`, `test/smaltts.test.ts`: 15 tests and one expected failure) runs against smaltdb `0b36f33`, the
-engine before ADRs 0016–0020. Against `9cd575c` it does not build: the `sql.*` operations it calls are gone, the
-language interface changed (`BindContext.catalog`, no `bindStoredExprs`), and 6 tests fail. It also predates
-sections 5.1, 7 (thin expressions) and 8 (reflecting by default, column lists, the conversion table). Milestone 1 of
-[MILESTONES.md](MILESTONES.md) re-bases it. Its dev dependencies were settled by the owner on 2026-11-10 (milestone 0): no `typescript`; smaltty, Node's types
-and vitest for development and tests.
+The prototype (`src/`, 39 tests) runs against smaltdb 0.9.0 (`1ce660a`), re-based in milestone 1: expressions are the
+engine's operations by their engine names (`fn`, `agg`, and the aliases of section 7), the catalog comes from the
+engine's catalog API, tables and indexes are defined without source text, the language serves views only and has its
+own entry point, and every plan node carries an `origin`. Engine finding F1 is fixed, and its test passes.
+
+It still predates sections 5.1 (the engine's types in specs: milestone 2) and 8 (reflecting by default, column lists,
+the conversion table: milestone 6), and the client path is untested (milestone 10). Its dev dependencies were settled
+by the owner on 2026-11-10 (milestone 0): no `typescript`; smaltty, Node's types and vitest for development and tests.
 
 ## 14. Decisions and open questions
 

@@ -3,13 +3,14 @@
  *
  * A `Rel<Row>` is an immutable, JSON-safe description of a relational plan that refers to columns by NAME (its IR,
  * `RelNode`). `compileRel` resolves the names against the tables' specs and produces the engine's positional
- * `PlanOp`. The IR is what smaltts stores as the source of its views, logs, diffs and caches; the engine never sees
- * it.
+ * `PlanOp`. The IR is what smaltts stores as the source of its views; the engine never sees it.
  *
- * The builder is pipeline-shaped (Calcite's RelBuilder, DataFusion's LogicalPlanBuilder), not query-shaped: every
- * method is one relational operation, applied in the order written.
+ * smaltts is thin (ADR 0023): every expression is one of the engine's operations or functions, by its engine name
+ * (`fn.div_float`, `fn.add_checked`). Methods on expressions are short aliases only where an operation has one meaning
+ * (`.eq` is `cmp_eq`, `.and` the logic node).
  */
 import * as P from 'smaltdb/plan';
+import { AGGREGATE, type AggregateName, SCALAR, type ScalarName } from './functions.js';
 import { type Collation, type StorageType, type TableSpec, type Value, planTypeOf } from './spec.js';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -17,14 +18,17 @@ import { type Collation, type StorageType, type TableSpec, type Value, planTypeO
 
 export type ExprNode =
   | { readonly k: 'col'; readonly name: string }
-  | { readonly k: 'lit'; readonly value: Value }
+  | { readonly k: 'lit'; readonly value: Value | boolean }
   | { readonly k: 'param'; readonly name: string; readonly type: P.PlanType }
-  | { readonly k: 'op'; readonly op: OpName; readonly args: readonly ExprNode[]; readonly collation?: Collation }
-  | { readonly k: 'agg'; readonly fn: AggName; readonly args: readonly ExprNode[]; readonly distinct?: boolean };
+  | { readonly k: 'fn'; readonly name: string; readonly args: readonly ExprNode[]; readonly collation?: Collation }
+  | { readonly k: 'and' | 'or'; readonly args: readonly ExprNode[] }
+  | { readonly k: 'not'; readonly arg: ExprNode }
+  | { readonly k: 'isNull'; readonly arg: ExprNode; readonly not: boolean }
+  | { readonly k: 'agg'; readonly name: string; readonly args: readonly ExprNode[]; readonly distinct?: boolean; readonly filter?: ExprNode };
 
 export type RelNode =
   | { readonly r: 'scan'; readonly table: string }
-  | { readonly r: 'values'; readonly columns: readonly { readonly name: string; readonly type: StorageType }[]; readonly rows: readonly (readonly Value[])[] }
+  | { readonly r: 'values'; readonly columns: readonly { readonly name: string; readonly type: StorageType }[]; readonly rows: readonly (readonly (Value | boolean)[])[] }
   | { readonly r: 'function'; readonly name: string; readonly args: readonly Value[]; readonly named?: Readonly<Record<string, Value>>; readonly columns: readonly { readonly name: string; readonly type: StorageType }[] }
   | { readonly r: 'filter'; readonly input: RelNode; readonly pred: ExprNode }
   | { readonly r: 'select'; readonly input: RelNode; readonly fields: readonly (readonly [string, ExprNode])[] }
@@ -36,127 +40,105 @@ export type RelNode =
   | { readonly r: 'union'; readonly all: boolean; readonly inputs: readonly [RelNode, RelNode] };
 
 // ---------------------------------------------------------------------------------------------------------------
-// Operations: each smaltts operation names the engine operation that gives its meaning.
-
-const OPS = {
-  eq: { fn: 'sql.eq', type: () => 'int' },
-  ne: { fn: 'sql.ne', type: () => 'int' },
-  lt: { fn: 'sql.lt', type: () => 'int' },
-  lte: { fn: 'sql.le', type: () => 'int' },
-  gt: { fn: 'sql.gt', type: () => 'int' },
-  gte: { fn: 'sql.ge', type: () => 'int' },
-  add: { fn: 'sql.add', type: numeric },
-  sub: { fn: 'sql.sub', type: numeric },
-  mul: { fn: 'sql.mul', type: numeric },
-  /** Float division, as TypeScript's `/`: 7 / 2 = 3.5 (the left side is converted to real first). */
-  div: { fn: 'sql.div', type: () => 'real' },
-  /** Integer division, truncating: 7 intDiv 2 = 3. */
-  intDiv: { fn: 'sql.div', type: () => 'int' },
-  mod: { fn: 'sql.mod', type: numeric },
-  neg: { fn: 'sql.neg', type: numeric },
-  concat: { fn: 'sql.concat', type: () => 'text' },
-  like: { fn: 'sql.like', type: () => 'int' },
-  in: { fn: 'sql.in_list', type: () => 'int' },
-  and: { fn: '', type: () => 'int' },
-  or: { fn: '', type: () => 'int' },
-  not: { fn: '', type: () => 'int' },
-  isNull: { fn: '', type: () => 'int' },
-  isNotNull: { fn: '', type: () => 'int' },
-  coalesce: { fn: 'coalesce', type: (ts) => ts.find((t) => t !== 'null') ?? 'null' },
-  lower: { fn: 'lower', type: () => 'text' },
-  upper: { fn: 'upper', type: () => 'text' },
-  trim: { fn: 'trim', type: () => 'text' },
-  length: { fn: 'length', type: () => 'int' },
-  abs: { fn: 'abs', type: numeric },
-  round: { fn: 'round', type: () => 'real' },
-} satisfies Record<string, { fn: string; type: (args: P.PlanType[]) => P.PlanType }>;
-export type OpName = keyof typeof OPS;
-
-function numeric(ts: P.PlanType[]): P.PlanType {
-  if (ts.every((t) => t === 'int')) return 'int';
-  if (ts.some((t) => t === 'real') && ts.every((t) => t === 'int' || t === 'real')) return 'real';
-  return 'num';
-}
-
-const AGGS = {
-  count: (_: P.PlanType[]) => 'int',
-  countDistinct: (_: P.PlanType[]) => 'int',
-  sum: (ts: P.PlanType[]) => (ts[0] === 'int' ? 'int' : 'num'),
-  total: (_: P.PlanType[]) => 'real',
-  avg: (_: P.PlanType[]) => 'real',
-  min: (ts: P.PlanType[]) => ts[0] ?? 'any',
-  max: (ts: P.PlanType[]) => ts[0] ?? 'any',
-} satisfies Record<string, (args: P.PlanType[]) => P.PlanType>;
-export type AggName = keyof typeof AGGS;
-
-// ---------------------------------------------------------------------------------------------------------------
 // Typed expressions.
 
+/** The TypeScript type of an engine plan type's values (`null` aside). Temporal values come as text until milestone 2. */
+type TsOf<T extends string> = T extends 'int' | 'real' | 'num' ? number : T extends 'text' | 'date' | 'datetime' | 'time' | 'duration' ? string : T extends 'bool' ? boolean : T extends 'blob' ? Uint8Array : Value | boolean;
 type Arg<T> = Expr<T> | T;
+type Truth = boolean | number | null;
 
 /** A typed expression over named columns. `T` is the TypeScript type of its values (with `null` when nullable). */
 export class Expr<T> {
   declare readonly $type: T;
-  constructor(readonly node: ExprNode) {}
-  private op<R>(op: OpName, ...args: Arg<unknown>[]): Expr<R> {
-    return new Expr<R>({ k: 'op', op, args: [this.node, ...args.map(toNode)] });
+  readonly node: ExprNode;
+  constructor(node: ExprNode) {
+    this.node = node;
   }
-  eq(other: Arg<T>): Expr<number> { return this.op('eq', other); }
-  ne(other: Arg<T>): Expr<number> { return this.op('ne', other); }
-  lt(other: Arg<T>): Expr<number> { return this.op('lt', other); }
-  lte(other: Arg<T>): Expr<number> { return this.op('lte', other); }
-  gt(other: Arg<T>): Expr<number> { return this.op('gt', other); }
-  gte(other: Arg<T>): Expr<number> { return this.op('gte', other); }
-  add(other: Arg<number | null>): Expr<T> { return this.op('add', other); }
-  sub(other: Arg<number | null>): Expr<T> { return this.op('sub', other); }
-  mul(other: Arg<number | null>): Expr<T> { return this.op('mul', other); }
-  div(other: Arg<number | null>): Expr<number | null> { return this.op('div', other); }
-  intDiv(other: Arg<number | null>): Expr<number | null> { return this.op('intDiv', other); }
-  mod(other: Arg<number | null>): Expr<T> { return this.op('mod', other); }
-  concat(other: Arg<string | null>): Expr<string> { return this.op('concat', other); }
-  like(pattern: Arg<string>): Expr<number> { return this.op('like', pattern); }
-  in(values: readonly Arg<T>[]): Expr<number> { return this.op('in', ...values); }
-  and(other: Arg<number | null>): Expr<number> { return this.op('and', other); }
-  or(other: Arg<number | null>): Expr<number> { return this.op('or', other); }
-  not(): Expr<number> { return this.op('not'); }
-  isNull(): Expr<number> { return this.op('isNull'); }
-  isNotNull(): Expr<number> { return this.op('isNotNull'); }
-  /** The value, or `fallback` where it is NULL. */
-  orElse(fallback: Arg<NonNullable<T>>): Expr<NonNullable<T>> { return this.op('coalesce', fallback); }
-  lower(): Expr<T> { return this.op('lower'); }
-  upper(): Expr<T> { return this.op('upper'); }
-  /** Compare text by this collation in the comparison this expression is part of. */
+  private call<R>(name: string, ...args: Arg<unknown>[]): Expr<R> {
+    return new Expr<R>({ k: 'fn', name, args: [this.node, ...args.map(toNode)] });
+  }
+  /** `cmp_eq`: equal (NULL if either side is NULL). */
+  eq(other: Arg<T>): Expr<boolean | null> { return this.call('cmp_eq', other); }
+  /** `cmp_ne` */
+  ne(other: Arg<T>): Expr<boolean | null> { return this.call('cmp_ne', other); }
+  /** `cmp_lt` */
+  lt(other: Arg<T>): Expr<boolean | null> { return this.call('cmp_lt', other); }
+  /** `cmp_le` */
+  lte(other: Arg<T>): Expr<boolean | null> { return this.call('cmp_le', other); }
+  /** `cmp_gt` */
+  gt(other: Arg<T>): Expr<boolean | null> { return this.call('cmp_gt', other); }
+  /** `cmp_ge` */
+  gte(other: Arg<T>): Expr<boolean | null> { return this.call('cmp_ge', other); }
+  /** `cmp_is`: equal, where NULL equals NULL; never NULL. */
+  is(other: Arg<T | null>): Expr<boolean> { return this.call('cmp_is', other); }
+  /** `cmp_is_not` */
+  isNot(other: Arg<T | null>): Expr<boolean> { return this.call('cmp_is_not', other); }
+  /** `in_list` */
+  in(values: readonly Arg<T>[]): Expr<boolean | null> { return this.call('in_list', ...values); }
+  /** `like` */
+  like(pattern: Arg<string>): Expr<boolean | null> { return this.call('like', pattern); }
+  /** `glob` */
+  glob(pattern: Arg<string>): Expr<boolean | null> { return this.call('glob', pattern); }
+  /** The logic node `and`. */
+  and(other: Arg<Truth>): Expr<boolean | null> { return new Expr({ k: 'and', args: [this.node, toNode(other)] }); }
+  /** The logic node `or`. */
+  or(other: Arg<Truth>): Expr<boolean | null> { return new Expr({ k: 'or', args: [this.node, toNode(other)] }); }
+  /** The logic node `not`. */
+  not(): Expr<boolean | null> { return new Expr({ k: 'not', arg: this.node }); }
+  /** The `isNull` node: never NULL. */
+  isNull(): Expr<boolean> { return new Expr({ k: 'isNull', arg: this.node, not: false }); }
+  isNotNull(): Expr<boolean> { return new Expr({ k: 'isNull', arg: this.node, not: true }); }
+  /** `coalesce`: the value, or `fallback` where it is NULL. */
+  orElse(fallback: Arg<NonNullable<T>>): Expr<NonNullable<T>> { return this.call('coalesce', fallback); }
+  /** The collation a comparison compares text by. */
   collate(collation: Collation): Expr<T> {
-    if (this.node.k !== 'op') throw new Error('collate() applies to a comparison');
+    if (this.node.k !== 'fn') throw new Error('collate() applies to a comparison');
     return new Expr<T>({ ...this.node, collation });
   }
 }
 
-const toNode = (v: unknown): ExprNode => (v instanceof Expr ? v.node : { k: 'lit', value: v as Value });
+const toNode = (v: unknown): ExprNode => (v instanceof Expr ? v.node : { k: 'lit', value: v as Value | boolean });
 
-export const lit = <T extends Value>(value: T): Expr<T> => new Expr({ k: 'lit', value });
+export const lit = <T extends Value | boolean>(value: T): Expr<T> => new Expr({ k: 'lit', value });
 export const col = <T = Value>(name: string): Expr<T> => new Expr({ k: 'col', name });
-export const and = (...preds: Expr<number | null>[]): Expr<number> => new Expr({ k: 'op', op: 'and', args: preds.map((p) => p.node) });
-export const or = (...preds: Expr<number | null>[]): Expr<number> => new Expr({ k: 'op', op: 'or', args: preds.map((p) => p.node) });
+export const and = (...preds: Arg<Truth>[]): Expr<boolean | null> => new Expr({ k: 'and', args: preds.map(toNode) });
+export const or = (...preds: Arg<Truth>[]): Expr<boolean | null> => new Expr({ k: 'or', args: preds.map(toNode) });
+export const not = (pred: Arg<Truth>): Expr<boolean | null> => new Expr({ k: 'not', arg: toNode(pred) });
+
+/** Every engine operation and scalar function, by its engine name: `fn.div_float(o.total, 2)`. */
+export const fn: { readonly [K in ScalarName]: (...args: Arg<any>[]) => Expr<TsOf<(typeof SCALAR)[K]> | null> } = new Proxy({} as never, {
+  get: (_, name) => (typeof name === 'string' && name in SCALAR ? (...args: unknown[]) => new Expr({ k: 'fn', name, args: args.map(toNode) }) : undefined),
+});
 
 /** Named parameters: values given when the plan runs. */
 export const param = {
   int: (name: string): Expr<number> => new Expr({ k: 'param', name, type: 'int' }),
   real: (name: string): Expr<number> => new Expr({ k: 'param', name, type: 'real' }),
   text: (name: string): Expr<string> => new Expr({ k: 'param', name, type: 'text' }),
+  bool: (name: string): Expr<boolean> => new Expr({ k: 'param', name, type: 'bool' }),
   any: (name: string): Expr<Value> => new Expr({ k: 'param', name, type: 'any' }),
 };
 
-/** Aggregates, for `Rel.aggregate`. */
-export const agg = {
-  count: (e?: Expr<unknown>): Expr<number> => new Expr({ k: 'agg', fn: 'count', args: e ? [e.node] : [] }),
-  countDistinct: (e: Expr<unknown>): Expr<number> => new Expr({ k: 'agg', fn: 'countDistinct', args: [e.node] }),
-  sum: <T extends number | null>(e: Expr<T>): Expr<number | null> => new Expr({ k: 'agg', fn: 'sum', args: [e.node] }),
-  total: (e: Expr<number | null>): Expr<number> => new Expr({ k: 'agg', fn: 'total', args: [e.node] }),
-  avg: (e: Expr<number | null>): Expr<number | null> => new Expr({ k: 'agg', fn: 'avg', args: [e.node] }),
-  min: <T>(e: Expr<T>): Expr<T | null> => new Expr({ k: 'agg', fn: 'min', args: [e.node] }),
-  max: <T>(e: Expr<T>): Expr<T | null> => new Expr({ k: 'agg', fn: 'max', args: [e.node] }),
-};
+/**
+ * Every engine aggregate, by its engine name, for `Rel.aggregate`: `agg.sum(o.total)`, `agg.count()` (rows),
+ * `agg.count(e, { distinct: true })`.
+ */
+export const agg: { readonly [K in AggregateName]: (...args: (Arg<any> | AggOptions)[]) => Expr<TsOf<(typeof AGGREGATE)[K]['result']> | null> } = new Proxy({} as never, {
+  get: (_, name) =>
+    typeof name === 'string' && name in AGGREGATE
+      ? (...args: unknown[]) => {
+          const last = args[args.length - 1];
+          const options = last && typeof last === 'object' && !(last instanceof Expr) && !(last instanceof Uint8Array) ? (args.pop() as AggOptions) : {};
+          return new Expr({ k: 'agg', name, args: args.map(toNode), ...(options.distinct ? { distinct: true } : {}), ...(options.filter ? { filter: options.filter.node } : {}) });
+        }
+      : undefined,
+});
+
+export interface AggOptions {
+  readonly distinct?: boolean;
+  /** Only the rows where this is true count. */
+  readonly filter?: Expr<Truth>;
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Typed relations.
@@ -166,8 +148,9 @@ type AnyRow = Record<string, unknown>;
 export type Cols<R> = { readonly [K in keyof R]: Expr<R[K]> };
 type Fields = Record<string, Expr<any>>;
 type RowOfFields<F extends Fields> = { [K in keyof F]: F[K]['$type'] };
-type Prefixed<R, P extends string> = { [K in keyof R & string as `${P}${K}`]: R[K] };
+type Prefixed<R, Px extends string> = { [K in keyof R & string as `${Px}${K}`]: R[K] };
 type Nullable<R> = { [K in keyof R]: R[K] | null };
+type Pred = Expr<Truth>;
 
 function colsProxy<R>(): Cols<R> {
   return new Proxy({} as Cols<R>, { get: (_, name) => (typeof name === 'string' ? col(name) : undefined) });
@@ -175,10 +158,13 @@ function colsProxy<R>(): Cols<R> {
 
 export class Rel<Row extends AnyRow = AnyRow> {
   declare readonly $row: Row;
-  constructor(readonly node: RelNode) {}
+  readonly node: RelNode;
+  constructor(node: RelNode) {
+    this.node = node;
+  }
 
   /** Keep the rows where `pred` is true. */
-  filter(pred: (r: Cols<Row>) => Expr<number | null>): Rel<Row> {
+  filter(pred: (r: Cols<Row>) => Pred): Rel<Row> {
     return new Rel({ r: 'filter', input: this.node, pred: pred(colsProxy<Row>()).node });
   }
   /** Compute a new set of columns. */
@@ -194,22 +180,22 @@ export class Rel<Row extends AnyRow = AnyRow> {
     return new Rel({ r: 'select', input: this.node, fields: names.map((n) => [n, { k: 'col', name: n }] as const) });
   }
   /** Join `right`. Its columns follow this one's; `prefix` renames them (needed when names collide). */
-  join<S extends AnyRow, Px extends string = ''>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<Prefixed<S, Px>>) => Expr<number | null>, options: { prefix?: Px } = {}): Rel<Row & Prefixed<S, Px>> {
+  join<S extends AnyRow, Px extends string = ''>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<Prefixed<S, Px>>) => Pred, options: { prefix?: Px } = {}): Rel<Row & Prefixed<S, Px>> {
     return this.joinOf('inner', right, on, options);
   }
   /** Join `right`, keeping rows of this relation without a match (the right columns are then NULL). */
-  leftJoin<S extends AnyRow, Px extends string = ''>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<Prefixed<S, Px>>) => Expr<number | null>, options: { prefix?: Px } = {}): Rel<Row & Nullable<Prefixed<S, Px>>> {
+  leftJoin<S extends AnyRow, Px extends string = ''>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<Prefixed<S, Px>>) => Pred, options: { prefix?: Px } = {}): Rel<Row & Nullable<Prefixed<S, Px>>> {
     return this.joinOf('left', right, on, options);
   }
   /** The rows that have a match in `right`. */
-  semiJoin<S extends AnyRow>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<S>) => Expr<number | null>): Rel<Row> {
+  semiJoin<S extends AnyRow>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<S>) => Pred): Rel<Row> {
     return this.joinOf('semi', right, on as never, {}) as never;
   }
   /** The rows that have no match in `right`. */
-  antiJoin<S extends AnyRow>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<S>) => Expr<number | null>): Rel<Row> {
+  antiJoin<S extends AnyRow>(right: Rel<S>, on: (l: Cols<Row>, r: Cols<S>) => Pred): Rel<Row> {
     return this.joinOf('anti', right, on as never, {}) as never;
   }
-  private joinOf(kind: 'inner' | 'left' | 'semi' | 'anti', right: Rel<any>, on: (l: any, r: any) => Expr<number | null>, options: { prefix?: string }): Rel<any> {
+  private joinOf(kind: 'inner' | 'left' | 'semi' | 'anti', right: Rel<any>, on: (l: any, r: any) => Pred, options: { prefix?: string }): Rel<any> {
     // Both sides' columns are referenced by name; collisions are resolved (or rejected) when the plan is compiled.
     const pred = on(colsProxy(), colsProxy()).node;
     return new Rel({ r: 'join', kind, left: this.node, right: right.node, on: pred, ...(options.prefix ? { prefix: options.prefix } : {}) });
@@ -238,7 +224,7 @@ export class Rel<Row extends AnyRow = AnyRow> {
   }
 }
 
-/** A table's rows. */
+/** A table's rows, or a view's. */
 export function scan<Row extends AnyRow>(table: TableSpec<Row>): Rel<Row>;
 export function scan(table: string): Rel;
 export function scan(table: TableSpec<any> | string): Rel<any> {
@@ -247,7 +233,7 @@ export function scan(table: TableSpec<any> | string): Rel<any> {
 
 /** Rows given in JavaScript, with their column types. */
 export function values<Row extends AnyRow>(columns: readonly { name: keyof Row & string; type: StorageType }[], rows: readonly Row[]): Rel<Row> {
-  return new Rel({ r: 'values', columns, rows: rows.map((row) => columns.map((c) => (row[c.name] ?? null) as Value)) });
+  return new Rel({ r: 'values', columns, rows: rows.map((row) => columns.map((c) => (row[c.name] ?? null) as Value | boolean)) });
 }
 
 /** A table function from a plugin (`read_csv`, …), with the columns it gives. */
@@ -262,11 +248,16 @@ export function relFromJSON<Row extends AnyRow = AnyRow>(node: RelNode): Rel<Row
 // ---------------------------------------------------------------------------------------------------------------
 // Compiling: names to positions.
 
-/** What compiling needs of the catalog: a table's columns by name. */
+/** What compiling needs of the catalog. */
 export interface Resolver {
+  /** A table's (or materialized view's) columns by name. */
   table(name: string): TableSpec<any> | undefined;
-  /** A smaltts view's relation: inlined where it is read (plans have no view reference: see docs/DESIGN.md, E3). */
+  /** A smaltts view's relation, inlined where it is read. */
   view?(name: string): RelNode | undefined;
+  /** A view in another language that declares its columns: read by name, its columns typed `any`. */
+  foreignView?(name: string): readonly string[] | undefined;
+  /** The engine's result type of a function for these argument types (the catalog's `resultType`). */
+  resultType?(name: string, args: readonly P.PlanType[]): P.PlanType | undefined;
 }
 
 export interface Field {
@@ -289,29 +280,33 @@ export function compileRel(rel: Rel<any> | RelNode, resolver: Resolver): Compile
   return { ...out, params };
 }
 
+/** Where a plan node came from, given back on the engine's errors (ADR 0016 §10). */
+const origin = (call: string): { readonly origin: P.PlanOrigin } => ({ origin: { smaltts: call } });
+
 function compile(n: RelNode, cat: Resolver, params: string[]): { plan: P.PlanOp; fields: Field[] } {
+  const at = (plan: P.PlanOp, call: string): P.PlanOp => ({ ...plan, ...origin(call) }) as P.PlanOp;
   switch (n.r) {
     case 'scan': {
       const t = cat.table(n.table);
-      if (!t) {
-        const view = cat.view?.(n.table);
-        if (view) return compile(view, cat, params);
-        throw new Error(`no table or smaltts view named ${n.table}`);
-      }
-      return { plan: P.scan(t.name, t.columns.map((_, i) => i)), fields: t.columns.map((c) => ({ name: c.name, type: planTypeOf(c.type), collation: c.collation ?? 'binary' })) };
+      if (t) return { plan: at(P.scan(t.name, t.columns.map((_, i) => i)), 'scan'), fields: t.columns.map((c) => ({ name: c.name, type: planTypeOf(c.type), collation: c.collation ?? 'binary' })) };
+      const view = cat.view?.(n.table);
+      if (view) return compile(view, cat, params);
+      const names = cat.foreignView?.(n.table);
+      if (names) return { plan: at(P.scan(n.table, names.map((_, i) => i)), 'scan'), fields: names.map((name) => ({ name, type: 'any', collation: 'binary' })) };
+      throw new Error(`scan: no table or view named ${n.table}`);
     }
     case 'values': {
       const types = n.columns.map((c) => planTypeOf(c.type));
-      return { plan: P.values(n.rows.map((row) => row.map((v) => P.lit(v))), types), fields: n.columns.map((c, i) => ({ name: c.name, type: types[i]!, collation: 'binary' })) };
+      return { plan: at(P.values(n.rows.map((row) => row.map((v, i) => literal(v, types[i]))), types), 'values'), fields: n.columns.map((c, i) => ({ name: c.name, type: types[i]!, collation: 'binary' })) };
     }
     case 'function': {
       const types = n.columns.map((c) => planTypeOf(c.type));
       const named = n.named ? Object.fromEntries(Object.entries(n.named).map(([k, v]) => [k, P.lit(v)])) : undefined;
-      return { plan: { op: 'source', kind: 'function', name: n.name, args: n.args.map((v) => P.lit(v)), ...(named ? { named } : {}), types }, fields: n.columns.map((c, i) => ({ name: c.name, type: types[i]!, collation: 'binary' })) };
+      return { plan: at({ op: 'source', kind: 'function', name: n.name, args: n.args.map((v) => P.lit(v)), ...(named ? { named } : {}), types }, 'tableFunction'), fields: n.columns.map((c, i) => ({ name: c.name, type: types[i]!, collation: 'binary' })) };
     }
     case 'filter': {
       const input = compile(n.input, cat, params);
-      return { plan: P.filter(input.plan, expr(n.pred, [input.fields], params).e), fields: input.fields };
+      return { plan: at(P.filter(input.plan, expr(n.pred, [input.fields], params, cat).e), 'filter'), fields: input.fields };
     }
     case 'select': {
       const input = compile(n.input, cat, params);
@@ -328,66 +323,78 @@ function compile(n: RelNode, cat: Resolver, params: string[]): { plan: P.PlanOp;
         });
       }
       for (const [name, node] of computed) {
-        const c = expr(node, [input.fields], params);
+        const c = expr(node, [input.fields], params, cat);
         fields.push({ name, type: c.type, collation: c.collation });
         exprs.push(c.e);
       }
-      return { plan: P.project(input.plan, exprs), fields };
+      return { plan: at(P.project(input.plan, exprs), star ? 'extend' : 'select'), fields };
     }
     case 'join': {
       const left = compile(n.left, cat, params);
       const right = compile(n.right, cat, params);
       const rightFields = right.fields.map((f) => ({ ...f, name: (n.prefix ?? '') + f.name }));
-      const on = n.on ? expr(n.on, [left.fields, rightFields], params).e : undefined;
-      if (n.kind === 'semi' || n.kind === 'anti') return { plan: P.join(n.kind, left.plan, right.plan, on), fields: left.fields };
+      const on = n.on ? expr(n.on, [left.fields, rightFields], params, cat).e : undefined;
+      if (n.kind === 'semi' || n.kind === 'anti') return { plan: at(P.join(n.kind, left.plan, right.plan, on), `${n.kind}Join`), fields: left.fields };
       const names = new Set(left.fields.map((f) => f.name.toLowerCase()));
       const clash = rightFields.find((f) => names.has(f.name.toLowerCase()));
       if (clash) throw new Error(`join: both sides have a column named ${clash.name}; give the right side a prefix`);
-      return { plan: P.join(n.kind, left.plan, right.plan, on), fields: [...left.fields, ...rightFields] };
+      return { plan: at(P.join(n.kind, left.plan, right.plan, on), n.kind === 'left' ? 'leftJoin' : 'join'), fields: [...left.fields, ...rightFields] };
     }
     case 'aggregate': {
       const input = compile(n.input, cat, params);
-      const keys = n.keys.map(([name, node]) => ({ name, ...expr(node, [input.fields], params) }));
+      const keys = n.keys.map(([name, node]) => ({ name, ...expr(node, [input.fields], params, cat) }));
       const aggs = n.aggs.map(([name, node]) => {
         if (node.k !== 'agg') throw new Error(`aggregate: ${name} is not an aggregate`);
-        const args = node.args.map((a) => expr(a, [input.fields], params));
-        const type = AGGS[node.fn](args.map((a) => a.type)) as P.PlanType;
-        const fn = node.fn === 'countDistinct' ? 'count' : node.fn;
-        return { name, type, call: P.agg(fn, args.map((a) => a.e), type, { star: node.fn === 'count' && args.length === 0, distinct: node.fn === 'countDistinct' || !!node.distinct }) };
+        const args = node.args.map((a) => expr(a, [input.fields], params, cat));
+        const def = AGGREGATE[node.name as keyof typeof AGGREGATE];
+        if (!def) throw new Error(`aggregate: no aggregate named ${node.name}`);
+        const type = (cat.resultType?.(node.name, args.map((a) => a.type)) ?? def.result) as P.PlanType;
+        const filter = node.filter ? expr(node.filter, [input.fields], params, cat).e : undefined;
+        return { name, type, call: P.agg(node.name, args.map((a) => a.e), type, { star: node.name === 'count' && args.length === 0, distinct: !!node.distinct, ...(filter ? { filter } : {}) }) };
       });
       return {
-        plan: P.aggregate(input.plan, keys.map((k) => k.e), aggs.map((a) => a.call), { collations: keys.map((k) => k.collation) }),
+        plan: at(P.aggregate(input.plan, keys.map((k) => k.e), aggs.map((a) => a.call), { collations: keys.map((k) => k.collation) }), 'aggregate'),
         fields: [...keys.map((k) => ({ name: k.name, type: k.type, collation: k.collation })), ...aggs.map((a) => ({ name: a.name, type: a.type, collation: 'binary' as Collation }))],
       };
     }
     case 'sort': {
       const input = compile(n.input, cat, params);
       const keys = n.keys.map((k) => {
-        const c = expr(k.expr, [input.fields], params);
+        const c = expr(k.expr, [input.fields], params, cat);
         return k.desc ? P.desc(c.e, { collation: c.collation }) : P.asc(c.e, { collation: c.collation });
       });
-      return { plan: P.sort(input.plan, keys), fields: input.fields };
+      return { plan: at(P.sort(input.plan, keys), 'sort'), fields: input.fields };
     }
     case 'limit': {
       const input = compile(n.input, cat, params);
-      return { plan: P.limit(input.plan, n.count, n.offset), fields: input.fields };
+      return { plan: at(P.limit(input.plan, n.count, n.offset), 'limit'), fields: input.fields };
     }
     case 'distinct': {
       const input = compile(n.input, cat, params);
-      return { plan: P.distinct(input.plan, input.fields.length, input.fields.map((f) => f.collation)), fields: input.fields };
+      return { plan: at(P.distinct(input.plan, input.fields.length, input.fields.map((f) => f.collation)), 'distinct'), fields: input.fields };
     }
     case 'union': {
       const a = compile(n.inputs[0], cat, params);
       const b = compile(n.inputs[1], cat, params);
       const names = (fs: Field[]) => fs.map((f) => f.name.toLowerCase()).join(',');
       if (names(a.fields) !== names(b.fields)) throw new Error(`union: the inputs have different columns (${names(a.fields)} / ${names(b.fields)})`);
-      return { plan: P.setop(n.all ? 'unionAll' : 'union', a.plan, b.plan, a.fields.length, a.fields.map((f) => f.collation)), fields: a.fields };
+      return { plan: at(P.setop(n.all ? 'unionAll' : 'union', a.plan, b.plan, a.fields.length, a.fields.map((f) => f.collation)), 'union'), fields: a.fields };
     }
   }
 }
 
+/** A literal: a JavaScript boolean is a `bool` (1 / 0, ADR 0018); `type` is the column's, where one is known. */
+function literal(v: Value | boolean, type?: P.PlanType): P.PlanExpr {
+  if (typeof v === 'boolean') return P.lit(v ? 1 : 0, 'bool');
+  if (type === 'bool' && (v === 0 || v === 1)) return P.lit(v, 'bool');
+  return P.lit(v);
+}
+
+/** Functions whose `collation` says how they compare text. */
+const COMPARES = new Set(['cmp_eq', 'cmp_ne', 'cmp_lt', 'cmp_le', 'cmp_gt', 'cmp_ge', 'cmp_is', 'cmp_is_not', 'in_list', 'like', 'glob']);
+
 /** Compile an expression whose column names resolve against `scopes` (one per input of the owning operation). */
-export function expr(n: ExprNode, scopes: readonly (readonly Field[])[], params: string[]): { e: P.PlanExpr; type: P.PlanType; collation: Collation } {
+export function expr(n: ExprNode, scopes: readonly (readonly Field[])[], params: string[], cat: Pick<Resolver, 'resultType'> = {}): { e: P.PlanExpr; type: P.PlanType; collation: Collation } {
   switch (n.k) {
     case 'col': {
       for (let input = 0; input < scopes.length; input++) {
@@ -400,7 +407,7 @@ export function expr(n: ExprNode, scopes: readonly (readonly Field[])[], params:
       throw new Error(`no column named ${n.name} (columns: ${scopes.flat().map((f) => f.name).join(', ')})`);
     }
     case 'lit': {
-      const e = P.lit(n.value);
+      const e = literal(n.value);
       return { e, type: (e as { type: P.PlanType }).type, collation: 'binary' };
     }
     case 'param': {
@@ -409,32 +416,27 @@ export function expr(n: ExprNode, scopes: readonly (readonly Field[])[], params:
       return { e: P.param(i, n.type), type: n.type, collation: 'binary' };
     }
     case 'agg':
-      throw new Error('an aggregate is only allowed in aggregate()');
-    case 'op': {
-      const args = n.args.map((a) => expr(a, scopes, params));
-      const es = args.map((a) => a.e);
+      throw new Error(`agg.${n.name} is only allowed in aggregate()`);
+    case 'and':
+    case 'or': {
+      const args = n.args.map((a) => expr(a, scopes, params, cat).e);
+      return { e: { ...(n.k === 'and' ? P.and(...args) : P.or(...args)), ...origin(n.k) }, type: 'bool', collation: 'binary' };
+    }
+    case 'not':
+      return { e: { ...P.not(expr(n.arg, scopes, params, cat).e), ...origin('not') }, type: 'bool', collation: 'binary' };
+    case 'isNull': {
+      const arg = expr(n.arg, scopes, params, cat).e;
+      return { e: { ...(n.not ? P.isNotNull(arg) : P.isNull(arg)), ...origin(n.not ? 'isNotNull' : 'isNull') }, type: 'bool', collation: 'binary' };
+    }
+    case 'fn': {
+      if (!(n.name in SCALAR)) throw new Error(`fn.${n.name}: the engine has no such function`);
+      const args = n.args.map((a) => expr(a, scopes, params, cat));
       const textArg = args.find((a) => a.collation !== 'binary');
       const collation: Collation = n.collation ?? textArg?.collation ?? 'binary';
-      switch (n.op) {
-        case 'and':
-          return { e: P.and(...es), type: 'int', collation: 'binary' };
-        case 'or':
-          return { e: P.or(...es), type: 'int', collation: 'binary' };
-        case 'not':
-          return { e: P.not(es[0]!), type: 'int', collation: 'binary' };
-        case 'isNull':
-          return { e: P.isNull(es[0]!), type: 'int', collation: 'binary' };
-        case 'isNotNull':
-          return { e: P.isNotNull(es[0]!), type: 'int', collation: 'binary' };
-        case 'div': {
-          const left = P.cast('sql.cast_real', es[0]!, 'real');
-          return { e: P.call('sql.div', [left, es[1]!], 'real'), type: 'real', collation: 'binary' };
-        }
-      }
-      const def = OPS[n.op];
-      const type = def.type(args.map((a) => a.type)) as P.PlanType;
-      const compares = ['eq', 'ne', 'lt', 'lte', 'gt', 'gte', 'in', 'like'].includes(n.op);
-      return { e: P.call(def.fn, es, type, compares ? collation : undefined), type, collation: type === 'text' ? collation : 'binary' };
+      const type = (cat.resultType?.(n.name, args.map((a) => a.type)) ?? SCALAR[n.name as ScalarName]) as P.PlanType;
+      const compares = COMPARES.has(n.name);
+      const e = { ...P.call(n.name, args.map((a) => a.e), type, compares ? collation : undefined), ...origin(`fn.${n.name}`) } as P.PlanExpr;
+      return { e, type, collation: type === 'text' ? collation : 'binary' };
     }
   }
 }

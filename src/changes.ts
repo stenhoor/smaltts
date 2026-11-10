@@ -16,7 +16,6 @@ import * as P from 'smaltdb/plan';
 import type { Backend } from './backend.js';
 import { type Catalog, readCatalog } from './catalog.js';
 import { type ColumnSpec, type IndexSpec, type SchemaSpec, type TableSpec, columnIndex, toColumnDef, toIndexDef, toTableDef } from './spec.js';
-import { LANGUAGE } from './language.js';
 
 /** How much a step costs and disrupts, from least to most. */
 export type Impact = 'metadata' | 'instant' | 'build' | 'rewrite';
@@ -61,7 +60,6 @@ export interface DiffOptions {
 /** The table smaltts records applied change sets in. */
 export const HISTORY_TABLE = 'smaltts_history';
 
-const source = (spec: unknown) => ({ language: LANGUAGE, text: JSON.stringify(spec) });
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const findTable = (tables: readonly TableSpec<any>[], name: string) => tables.find((t) => same(t.name, name));
 
@@ -82,7 +80,7 @@ export function diffCatalog(have: readonly TableSpec<any>[], desired: SchemaSpec
     if (!old && want.renamedFrom) {
       old = findTable(have, want.renamedFrom);
       if (old) {
-        steps.push({ action: 'renameTable', object: want.name, impact: 'metadata', dataLoss: 'none', reason: `renamed from ${old.name}`, statements: [{ kind: 'schema', op: { op: 'alterTable', table: old.name, action: { kind: 'renameTable', newName: want.name }, source: source(want) } }] });
+        steps.push({ action: 'renameTable', object: want.name, impact: 'metadata', dataLoss: 'none', reason: `renamed from ${old.name}`, statements: [{ kind: 'schema', op: { op: 'alterTable', table: old.name, action: { kind: 'renameTable', newName: want.name } } }] });
       }
     }
     if (!old) {
@@ -118,13 +116,13 @@ function finish(steps: Step[], diagnostics: Diagnostic[]): ChangeSet {
 
 function createTableSteps(want: TableSpec<any>, reason: string): Step[] {
   return [
-    { action: 'createTable', object: want.name, impact: 'metadata', dataLoss: 'none', reason, statements: [{ kind: 'schema', op: { op: 'createTable', table: toTableDef(want), temp: false, ifNotExists: false, source: source(want) } }] },
+    { action: 'createTable', object: want.name, impact: 'metadata', dataLoss: 'none', reason, statements: [{ kind: 'schema', op: { op: 'createTable', table: toTableDef(want), temp: false, ifNotExists: false } }] },
     ...(want.indexes ?? []).map((ix) => createIndexStep(want, ix, `index of new table ${want.name}`)),
   ];
 }
 
 function createIndexStep(table: TableSpec<any>, ix: IndexSpec, reason: string): Step {
-  return { action: 'createIndex', object: ix.name, impact: 'build', dataLoss: 'none', reason, statements: [{ kind: 'schema', op: { op: 'createIndex', index: toIndexDef(table, ix), ifNotExists: false, source: source(ix) } }] };
+  return { action: 'createIndex', object: ix.name, impact: 'build', dataLoss: 'none', reason, statements: [{ kind: 'schema', op: { op: 'createIndex', index: toIndexDef(table, ix), ifNotExists: false } }] };
 }
 
 function dropIndexStep(ix: IndexSpec, reason: string): Step {
@@ -177,14 +175,14 @@ function tableSteps(old: TableSpec<any>, want: TableSpec<any>, diagnostics: Diag
 
   for (const [c, prev] of matched) {
     if (prev.name !== c.name) {
-      steps.push({ action: 'renameColumn', object: `${want.name}.${c.name}`, impact: 'metadata', dataLoss: 'none', reason: `renamed from ${prev.name}`, statements: [{ kind: 'schema', op: { op: 'alterTable', table: want.name, action: { kind: 'renameColumn', column: prev.name, newName: c.name }, source: source(want) } }] });
+      steps.push({ action: 'renameColumn', object: `${want.name}.${c.name}`, impact: 'metadata', dataLoss: 'none', reason: `renamed from ${prev.name}`, statements: [{ kind: 'schema', op: { op: 'alterTable', table: want.name, action: { kind: 'renameColumn', column: prev.name, newName: c.name } } }] });
     }
   }
   for (const c of dropped) {
-    steps.push({ action: 'dropColumn', object: `${want.name}.${c.name}`, impact: 'rewrite', dataLoss: 'certain', reason: `${c.name} is not in the desired table`, statements: [{ kind: 'schema', op: { op: 'alterTable', table: want.name, action: { kind: 'dropColumn', column: c.name }, source: source(want) } }] });
+    steps.push({ action: 'dropColumn', object: `${want.name}.${c.name}`, impact: 'rewrite', dataLoss: 'certain', reason: `${c.name} is not in the desired table`, statements: [{ kind: 'schema', op: { op: 'alterTable', table: want.name, action: { kind: 'dropColumn', column: c.name } } }] });
   }
   for (const c of added) {
-    steps.push({ action: 'addColumn', object: `${want.name}.${c.name}`, impact: 'instant', dataLoss: 'none', reason: `${c.name} is not in the table`, statements: [{ kind: 'schema', op: { op: 'alterTable', table: want.name, action: { kind: 'addColumn', column: toColumnDef(c), checks: [], foreignKeys: [], text: JSON.stringify(c) }, source: source(want) } }] });
+    steps.push({ action: 'addColumn', object: `${want.name}.${c.name}`, impact: 'instant', dataLoss: 'none', reason: `${c.name} is not in the table`, statements: [{ kind: 'schema', op: { op: 'alterTable', table: want.name, action: { kind: 'addColumn', column: toColumnDef(c), checks: [], foreignKeys: [], text: JSON.stringify(c) } } }] });
   }
   // Indexes: by name.
   for (const ix of old.indexes ?? []) {
@@ -234,11 +232,11 @@ function rebuildStep(old: TableSpec<any>, want: TableSpec<any>, matched: Map<Col
     dataLoss: drops ? 'certain' : narrows ? 'possible' : 'none',
     reason: reasons.join('; '),
     statements: [
-      { kind: 'schema', op: { op: 'createTable', table: toTableDef(tempSpec), temp: false, ifNotExists: false, source: source(tempSpec) } },
+      { kind: 'schema', op: { op: 'createTable', table: toTableDef(tempSpec), temp: false, ifNotExists: false } },
       { kind: 'write', plan: copy },
       { kind: 'schema', op: { op: 'drop', objectType: 'table', name: old.name, ifExists: false } },
-      { kind: 'schema', op: { op: 'alterTable', table: temp, action: { kind: 'renameTable', newName: want.name }, source: source(want) } },
-      ...(want.indexes ?? []).map((ix): PlanStatementInput => ({ kind: 'schema', op: { op: 'createIndex', index: toIndexDef(want, ix), ifNotExists: false, source: source(ix) } })),
+      { kind: 'schema', op: { op: 'alterTable', table: temp, action: { kind: 'renameTable', newName: want.name } } },
+      ...(want.indexes ?? []).map((ix): PlanStatementInput => ({ kind: 'schema', op: { op: 'createIndex', index: toIndexDef(want, ix), ifNotExists: false } })),
     ],
   };
 }
@@ -297,7 +295,7 @@ const historySpec: TableSpec = {
 };
 
 async function recordHistory(db: Backend, changes: ChangeSet, label: string | undefined): Promise<void> {
-  await db.run({ kind: 'schema', op: { op: 'createTable', table: toTableDef(historySpec), temp: false, ifNotExists: true, source: source(historySpec) } });
+  await db.run({ kind: 'schema', op: { op: 'createTable', table: toTableDef(historySpec), temp: false, ifNotExists: true } });
   const row = P.values([[P.lit(changes.checksum), P.lit(label ?? null), P.lit(JSON.stringify(changes.steps.map((s) => ({ action: s.action, object: s.object, reason: s.reason }))))]], ['text', 'text', 'text']);
   await db.run({ kind: 'write', plan: P.append(HISTORY_TABLE, row, [1, 2, 3]) });
 }

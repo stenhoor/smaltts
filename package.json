@@ -15,6 +15,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./language": {
+      "types": "./dist/language.d.ts",
+      "default": "./dist/language.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
