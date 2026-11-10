@@ -197,8 +197,12 @@ function tableSteps(old: TableSpec<any>, want: TableSpec<any>, diagnostics: Diag
   return steps;
 }
 
+/** A full list or struct type, compared without regard to spacing or case. */
+const fullType = (c: ColumnSpec) => (c.planType ?? '').replace(/\s+/g, ' ').replace(/\s*([<>,])\s*/g, '$1').toLowerCase();
+
 function columnChange(prev: ColumnSpec, c: ColumnSpec): string | undefined {
   if (prev.type !== c.type) return `type ${prev.type} → ${c.type}`;
+  if (fullType(prev) !== fullType(c)) return `type ${prev.planType ?? prev.type} → ${c.planType ?? c.type}`;
   if (!!prev.notNull !== !!c.notNull) return c.notNull ? 'becomes NOT NULL' : 'becomes nullable';
   if ((prev.collation ?? 'binary') !== (c.collation ?? 'binary')) return `collation ${prev.collation ?? 'binary'} → ${c.collation ?? 'binary'}`;
   if (JSON.stringify(prev.default ?? null) !== JSON.stringify(c.default ?? null)) return 'default changes';

@@ -144,10 +144,11 @@ they are:
   passed to `to_zone` / `from_zone` / `zone_offset`, so each row can have its own; calendar steps are `offset_by`.
 - **Reading values:** the engine gives temporal values as ISO text by default and other forms on request; each
   language chooses. smaltts reads `datetime` and `date` as `Date`, as smaltdf does, so values written from a `Date`
-  round-trip exactly. A `datetime` with a sub-millisecond part needs the exact form (`{ temporal: 'text' }` or epoch
-  µs), never a silent truncation.
-- **A zone for a column** is smaltts metadata in the spec (`datetime({ zone: 'Europe/Paris' })`), which smaltts passes
-  to the engine's zone operations; storage has no zone (ADR 0019 §2).
+  round-trip exactly. A `Date` holds ms, so a `datetime`'s µs are dropped, as the engine's `Date` form drops them
+  (owner's decision, 2026-11-10); `{ temporal: 'text' }` reads the exact text.
+- **A zone for a column** would be smaltts metadata in the spec (`datetime({ zone: 'Europe/Paris' })`), passed to the
+  engine's zone operations; storage has no zone (ADR 0019 §2). Not built yet: the catalog could not read it back, so it
+  needs somewhere to be kept (planned).
 - **SQL keeps SQLite's meaning** (ADR 0019 decision 4): SQL's `DATE` declared type stays NUMERIC, and SQL reads
   temporal values as text and lists and structs as JSON. Tables smaltts defines are plan-defined, so they get the real
   types; smaltql users read them as text. No dialect version is needed.
@@ -417,6 +418,8 @@ Status against smaltdb `9cd575c` (2026-11-08). Most of the first round is in the
 | **E7** | Types and behaviour-named operations | **done**: `bool` and NaN (0018), dates and times (0019), lists and structs (0020), behaviour names (0016 §1). |
 | **E8** | Change capture; resumable rebuilds | open; the roadmap's sync groundwork (before the sync plugin) |
 | **E9** | A materialized-view refresh that adapts its stored columns | open |
+| **F2** | bug | Values from columns read text in the result format for `date`, `time` and `datetime` but not for `duration` (ADR 0019 §5: text in the result format parses). | Writing a `duration` from its text. Pinned by a `test.fails` (`test/engine-findings.test.ts`). |
+| **F3** | bug | A JavaScript `Date` in a `date` column of values is taken as a `datetime` (µs), so it stores a day millions of years away. smaltts gives a `date` column the ISO day text instead, an input form the engine documents. | `Date`s into `date` columns. Pinned by a `test.fails`. |
 | **E10** | View interfaces in the engine: typed column lists, the conversion table, dependents checked after every DDL (refusing drops and recreation under an interface unless cascaded) | open; the largest, and the one section 8 depends on |
 
 The engine also gained what smaltts did not ask for and now uses: errors with an `origin` and structured fields,
@@ -469,8 +472,9 @@ by the owner on 2026-11-10 (milestone 0): no `typescript`; smaltty, Node's types
 8. **The relational builder's scope** includes windows, set operations and subqueries, recursion, and merge and
    incremental loads (section 7).
 9. **Types come from the engine**: no interim encodings in smaltts (section 5.1).
-10. **JavaScript values**: `Date` by default, an option for exact values; dropping sub-millisecond digits is always
-    explicit.
+10. **JavaScript values**: `Date` by default, an option for exact values (2026-11-06). Revised on 2026-11-10: a
+    `datetime`'s µs are dropped when it is read as a `Date`, as the engine's `Date` form does; the exact text is an
+    option.
 11. **smaltts is thin** (smalt-brand's description, 2026-11-08): typed plan and schema operations with structured
     flows, no query semantics of its own (section 7).
 12. **Expression names** (2026-11-10): every engine operation as `fn.<engine name>`, with short aliases only where an

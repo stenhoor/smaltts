@@ -11,14 +11,15 @@
  */
 import * as P from 'smaltdb/plan';
 import { AGGREGATE, type AggregateName, SCALAR, type ScalarName } from './functions.js';
-import { type Collation, type StorageType, type TableSpec, type Value, planTypeOf } from './spec.js';
+import { type Collation, type StorageType, type TableSpec, type Value, columnPlanType } from './spec.js';
 
 // ---------------------------------------------------------------------------------------------------------------
 // The IR.
 
 export type ExprNode =
   | { readonly k: 'col'; readonly name: string }
-  | { readonly k: 'lit'; readonly value: Value | boolean }
+  /** A literal; `date: true` marks a JavaScript `Date`, kept as ISO text and typed by what it is compared with. */
+  | { readonly k: 'lit'; readonly value: Value | boolean; readonly date?: true }
   | { readonly k: 'param'; readonly name: string; readonly type: P.PlanType }
   | { readonly k: 'fn'; readonly name: string; readonly args: readonly ExprNode[]; readonly collation?: Collation }
   | { readonly k: 'and' | 'or'; readonly args: readonly ExprNode[] }
@@ -26,10 +27,17 @@ export type ExprNode =
   | { readonly k: 'isNull'; readonly arg: ExprNode; readonly not: boolean }
   | { readonly k: 'agg'; readonly name: string; readonly args: readonly ExprNode[]; readonly distinct?: boolean; readonly filter?: ExprNode };
 
+/** A column of a source given in the plan: its name, storage type and, for a list or struct, its full plan type. */
+export interface ColumnType {
+  readonly name: string;
+  readonly type: StorageType;
+  readonly planType?: string;
+}
+
 export type RelNode =
   | { readonly r: 'scan'; readonly table: string }
-  | { readonly r: 'values'; readonly columns: readonly { readonly name: string; readonly type: StorageType }[]; readonly rows: readonly (readonly (Value | boolean)[])[] }
-  | { readonly r: 'function'; readonly name: string; readonly args: readonly Value[]; readonly named?: Readonly<Record<string, Value>>; readonly columns: readonly { readonly name: string; readonly type: StorageType }[] }
+  | { readonly r: 'values'; readonly columns: readonly ColumnType[]; readonly rows: readonly (readonly (Value | boolean)[])[] }
+  | { readonly r: 'function'; readonly name: string; readonly args: readonly Value[]; readonly named?: Readonly<Record<string, Value>>; readonly columns: readonly ColumnType[] }
   | { readonly r: 'filter'; readonly input: RelNode; readonly pred: ExprNode }
   | { readonly r: 'select'; readonly input: RelNode; readonly fields: readonly (readonly [string, ExprNode])[] }
   | { readonly r: 'join'; readonly kind: 'inner' | 'left' | 'semi' | 'anti' | 'cross'; readonly left: RelNode; readonly right: RelNode; readonly on?: ExprNode; readonly prefix?: string }
@@ -42,8 +50,8 @@ export type RelNode =
 // ---------------------------------------------------------------------------------------------------------------
 // Typed expressions.
 
-/** The TypeScript type of an engine plan type's values (`null` aside). Temporal values come as text until milestone 2. */
-type TsOf<T extends string> = T extends 'int' | 'real' | 'num' ? number : T extends 'text' | 'date' | 'datetime' | 'time' | 'duration' ? string : T extends 'bool' ? boolean : T extends 'blob' ? Uint8Array : Value | boolean;
+/** The TypeScript type of an engine plan type's values (`null` aside), as smaltts reads them (`date`, `datetime`: `Date`). */
+type TsOf<T extends string> = T extends 'int' | 'real' | 'num' ? number : T extends 'date' | 'datetime' ? Date : T extends 'text' | 'time' | 'duration' ? string : T extends 'bool' ? boolean : T extends 'blob' ? Uint8Array : Value | boolean;
 type Arg<T> = Expr<T> | T;
 type Truth = boolean | number | null;
 
@@ -97,9 +105,10 @@ export class Expr<T> {
   }
 }
 
-const toNode = (v: unknown): ExprNode => (v instanceof Expr ? v.node : { k: 'lit', value: v as Value | boolean });
+const toNode = (v: unknown): ExprNode =>
+  v instanceof Expr ? v.node : v instanceof Date ? { k: 'lit', value: v.toISOString(), date: true } : { k: 'lit', value: v as Value | boolean };
 
-export const lit = <T extends Value | boolean>(value: T): Expr<T> => new Expr({ k: 'lit', value });
+export const lit = <T extends Value | boolean | Date>(value: T): Expr<T> => new Expr(toNode(value));
 export const col = <T = Value>(name: string): Expr<T> => new Expr({ k: 'col', name });
 export const and = (...preds: Arg<Truth>[]): Expr<boolean | null> => new Expr({ k: 'and', args: preds.map(toNode) });
 export const or = (...preds: Arg<Truth>[]): Expr<boolean | null> => new Expr({ k: 'or', args: preds.map(toNode) });
@@ -116,6 +125,8 @@ export const param = {
   real: (name: string): Expr<number> => new Expr({ k: 'param', name, type: 'real' }),
   text: (name: string): Expr<string> => new Expr({ k: 'param', name, type: 'text' }),
   bool: (name: string): Expr<boolean> => new Expr({ k: 'param', name, type: 'bool' }),
+  date: (name: string): Expr<Date> => new Expr({ k: 'param', name, type: 'date' }),
+  datetime: (name: string): Expr<Date> => new Expr({ k: 'param', name, type: 'datetime' }),
   any: (name: string): Expr<Value> => new Expr({ k: 'param', name, type: 'any' }),
 };
 
@@ -232,12 +243,12 @@ export function scan(table: TableSpec<any> | string): Rel<any> {
 }
 
 /** Rows given in JavaScript, with their column types. */
-export function values<Row extends AnyRow>(columns: readonly { name: keyof Row & string; type: StorageType }[], rows: readonly Row[]): Rel<Row> {
+export function values<Row extends AnyRow>(columns: readonly (ColumnType & { name: keyof Row & string })[], rows: readonly Row[]): Rel<Row> {
   return new Rel({ r: 'values', columns, rows: rows.map((row) => columns.map((c) => (row[c.name] ?? null) as Value | boolean)) });
 }
 
 /** A table function from a plugin (`read_csv`, …), with the columns it gives. */
-export function tableFunction<Row extends AnyRow = AnyRow>(name: string, args: readonly Value[], columns: readonly { name: string; type: StorageType }[], named?: Record<string, Value>): Rel<Row> {
+export function tableFunction<Row extends AnyRow = AnyRow>(name: string, args: readonly Value[], columns: readonly ColumnType[], named?: Record<string, Value>): Rel<Row> {
   return new Rel({ r: 'function', name, args, columns, ...(named ? { named } : {}) });
 }
 
@@ -288,7 +299,7 @@ function compile(n: RelNode, cat: Resolver, params: string[]): { plan: P.PlanOp;
   switch (n.r) {
     case 'scan': {
       const t = cat.table(n.table);
-      if (t) return { plan: at(P.scan(t.name, t.columns.map((_, i) => i)), 'scan'), fields: t.columns.map((c) => ({ name: c.name, type: planTypeOf(c.type), collation: c.collation ?? 'binary' })) };
+      if (t) return { plan: at(P.scan(t.name, t.columns.map((_, i) => i)), 'scan'), fields: t.columns.map((c) => ({ name: c.name, type: columnPlanType(c), collation: c.collation ?? 'binary' })) };
       const view = cat.view?.(n.table);
       if (view) return compile(view, cat, params);
       const names = cat.foreignView?.(n.table);
@@ -296,11 +307,11 @@ function compile(n: RelNode, cat: Resolver, params: string[]): { plan: P.PlanOp;
       throw new Error(`scan: no table or view named ${n.table}`);
     }
     case 'values': {
-      const types = n.columns.map((c) => planTypeOf(c.type));
+      const types = n.columns.map(columnPlanType);
       return { plan: at(P.values(n.rows.map((row) => row.map((v, i) => literal(v, types[i]))), types), 'values'), fields: n.columns.map((c, i) => ({ name: c.name, type: types[i]!, collation: 'binary' })) };
     }
     case 'function': {
-      const types = n.columns.map((c) => planTypeOf(c.type));
+      const types = n.columns.map(columnPlanType);
       const named = n.named ? Object.fromEntries(Object.entries(n.named).map(([k, v]) => [k, P.lit(v)])) : undefined;
       return { plan: at({ op: 'source', kind: 'function', name: n.name, args: n.args.map((v) => P.lit(v)), ...(named ? { named } : {}), types }, 'tableFunction'), fields: n.columns.map((c, i) => ({ name: c.name, type: types[i]!, collation: 'binary' })) };
     }
@@ -384,10 +395,20 @@ function compile(n: RelNode, cat: Resolver, params: string[]): { plan: P.PlanOp;
 }
 
 /** A literal: a JavaScript boolean is a `bool` (1 / 0, ADR 0018); `type` is the column's, where one is known. */
-function literal(v: Value | boolean, type?: P.PlanType): P.PlanExpr {
+function literal(v: Value | boolean, type?: P.PlanType, date?: boolean): P.PlanExpr {
+  if (date && typeof v === 'string') return dateLiteral(v, type);
   if (typeof v === 'boolean') return P.lit(v ? 1 : 0, 'bool');
   if (type === 'bool' && (v === 0 || v === 1)) return P.lit(v, 'bool');
   return P.lit(v);
+}
+
+const MS_PER_DAY = 86_400_000;
+
+/** A JavaScript `Date` (as ISO text) as a `date` (days since 1970-01-01) or, by default, a `datetime` (µs). */
+function dateLiteral(iso: string, type?: P.PlanType): P.PlanExpr {
+  const ms = Date.parse(iso);
+  if (type === 'date') return P.lit(Math.floor(ms / MS_PER_DAY), 'date');
+  return P.lit(ms * 1000, 'datetime');
 }
 
 /** Functions whose `collation` says how they compare text. */
@@ -407,7 +428,7 @@ export function expr(n: ExprNode, scopes: readonly (readonly Field[])[], params:
       throw new Error(`no column named ${n.name} (columns: ${scopes.flat().map((f) => f.name).join(', ')})`);
     }
     case 'lit': {
-      const e = literal(n.value);
+      const e = literal(n.value, undefined, n.date);
       return { e, type: (e as { type: P.PlanType }).type, collation: 'binary' };
     }
     case 'param': {
@@ -430,7 +451,11 @@ export function expr(n: ExprNode, scopes: readonly (readonly Field[])[], params:
     }
     case 'fn': {
       if (!(n.name in SCALAR)) throw new Error(`fn.${n.name}: the engine has no such function`);
-      const args = n.args.map((a) => expr(a, scopes, params, cat));
+      // A Date literal takes the temporal type of what it is compared or combined with (a date counts days).
+      const isDate = (a: ExprNode) => a.k === 'lit' && a.date === true;
+      const others = n.args.map((a) => (isDate(a) ? null : expr(a, scopes, params, cat)));
+      const temporal = others.find((a) => a && (a.type === 'date' || a.type === 'datetime'))?.type;
+      const args = n.args.map((a, i) => others[i] ?? { e: literal((a as { value: string }).value, temporal, true), type: temporal ?? 'datetime', collation: 'binary' as Collation });
       const textArg = args.find((a) => a.collation !== 'binary');
       const collation: Collation = n.collation ?? textArg?.collation ?? 'binary';
       const type = (cat.resultType?.(n.name, args.map((a) => a.type)) ?? SCALAR[n.name as ScalarName]) as P.PlanType;

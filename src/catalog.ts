@@ -55,6 +55,7 @@ export function specOfCatalogTable(t: CatalogTable, defaults: ReadonlyMap<string
   const columns: ColumnSpec[] = t.columns.map((c) => ({
     name: c.name,
     type: c.storageType,
+    ...(c.storageType === 'LIST' || c.storageType === 'STRUCT' ? { planType: c.type } : {}),
     ...(c.notNull ? { notNull: true } : {}),
     ...(c.collation !== 'binary' ? { collation: c.collation } : {}),
     ...(c.hasDefault && defaults.has(c.name.toLowerCase()) ? { default: defaults.get(c.name.toLowerCase())! } : {}),

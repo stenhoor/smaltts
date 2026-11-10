@@ -52,7 +52,8 @@ Size: M. Needs milestone 0. Status: done, 2026-11-10: pinned to smaltdb `1ce660a
 
 ## 2. Specs with the engine's types
 
-Size: M.
+Size: M. Status: in progress: the types, values in and out, and inference in review; CHECKs, computed defaults and
+foreign keys next.
 
 - `bool()`, `date()`, `datetime({ zone? })`, `time()`, `duration()`, `list(…)`, `struct({…})`; CHECKs and defaults
   as plan expressions; foreign keys.
