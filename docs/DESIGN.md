@@ -275,7 +275,8 @@ A view has one of two purposes, and declares which:
 | A column it reads is renamed | a column it passes through takes the new name; columns it names itself keep their names | the view reads the new name; its output does not change |
 | A column is added to a table it reads in full | the view gains the column | the view does not change |
 | A type changes underneath | the view's column takes the new type | allowed only by a lossless conversion (8.3), which the view applies; otherwise breaking |
-| A column it reads is dropped | breaking | breaking |
+| A column it passes through is dropped (a reflecting `scan`) | the view loses the column | breaking |
+| A column it names or reads in an expression is dropped | breaking | breaking |
 | Suits | staging, internal and convenience views | views other tools and pipeline steps read; published datasets |
 
 **The column list is the declaration, in every language.** It is standard SQL (`CREATE VIEW daily(day, total) AS …`,
@@ -345,7 +346,7 @@ smaltts keeps this table until the engine publishes its own (E10).
 
 A materialized view stores its rows in columns fixed when it is created: a refresh after its relation's shape
 changes fails (`the query now returns 5 columns, the view has 4`). So when a change set changes a reflecting
-materialized view's shape, it adds a step that recreates and refills it (impact rewrite). An interface materialized
+materialized view's shape, it adds a step that recreates and refills it (`replaceView`, impact rewrite). An interface materialized
 view's shape cannot change without a change to its declaration. A refresh that adapts the stored columns itself is
 an engine proposal (E9).
 
@@ -455,7 +456,7 @@ asof joins, sample, `ignoreNulls`, explode).
 
 ## 13. Prototype status
 
-The prototype (`src/`, 131 tests) runs against smaltdb 0.9.0 (`1ce660a`).
+The prototype (`src/`, 167 tests) runs against smaltdb 0.9.0 (`1ce660a`).
 
 - **Milestone 1:** expressions are the engine's operations by their engine names (`fn`, `agg`, and the aliases of
   section 7), the catalog comes from the engine's catalog API, tables and indexes are defined without source text, the
@@ -465,8 +466,10 @@ The prototype (`src/`, 131 tests) runs against smaltdb 0.9.0 (`1ce660a`).
 - **Milestone 5:** one builder per plan operation (section 7), each compiling to the plan the raw builders give, and
   correlated subqueries at any depth. The engine's operations are typed by a table of signatures
   (`src/signatures.ts`), its other functions loosely, and every call's argument count is checked against the catalog.
+- **Milestone 6, part 1:** interface views with a column list (names and order), view sources that follow renames
+  column by column (`src/views.ts`), and change sets that check every view over a changed table (section 8).
 
-It still predates section 8's views (reflecting by default, column lists: milestone 6), and the client path is untested
+Typed interfaces wait on the engine (E10, milestone 6 part 2), and the client path is untested
 (milestone 10). Its dev dependencies were settled by the owner on 2026-11-10 (milestone 0): no `typescript`; smaltty,
 Node's types and vitest for development and tests. Engine findings F2–F4 are open, each pinned by a failing test.
 

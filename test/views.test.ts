@@ -4,7 +4,7 @@
  */
 import { beforeAll, describe as group, expect, test } from 'vitest';
 import { Database } from 'smaltdb/engine';
-import { agg, attach, exists, int, iterate, list, renameColumnIn, scan, table, tablesOf, text } from '../src/index.js';
+import { agg, attach, bool, exists, int, iterate, list, renameColumnIn, scan, table, tablesOf, text } from '../src/index.js';
 import { registerSmaltts } from '../src/language.js';
 
 beforeAll(() => registerSmaltts());
@@ -153,5 +153,100 @@ group('the relation edits, as functions', () => {
     const json = JSON.stringify(renameColumnIn(rel.node, 't', 'g', 'grp'));
     expect(json).toContain('{"k":"col","name":"grp"}');
     expect(JSON.stringify(renameColumnIn(rel.node, 't', 'y', 'z'))).toBe(JSON.stringify(rel.node));
+  });
+});
+
+group('change sets: what a table change does to the views reading it', () => {
+  const kinds = [
+    { name: 'reflecting', columns: undefined, materialized: false },
+    { name: 'reflecting materialized', columns: undefined, materialized: true },
+    { name: 'interface', columns: ['id', 'g', 'x'], materialized: false },
+    { name: 'interface materialized', columns: ['id', 'g', 'x'], materialized: true },
+  ] as const;
+  const renamed = table('t', { id: int().primaryKey(), grp: text().renamedFrom('g'), x: int() });
+  const added = table('t', { id: int().primaryKey(), g: text(), x: int(), y: int() });
+  const dropped = table('t', { id: int().primaryKey(), g: text() });
+
+  async function withView(kind: (typeof kinds)[number]) {
+    const db = await fresh();
+    await db.createView('v', scan(t), { ...(kind.columns ? { columns: kind.columns } : {}), materialized: kind.materialized });
+    return db;
+  }
+  const entries = (c: { steps: readonly { action: string; object: string; impact: string }[]; diagnostics: readonly { level: string; object: string }[] }) => ({
+    steps: c.steps.filter((s) => s.object === 'v').map((s) => `${s.action} ${s.impact}`),
+    diagnostics: c.diagnostics.filter((d) => d.object.startsWith('v')).map((d) => d.level),
+  });
+
+  for (const kind of kinds) {
+    const reflecting = !kind.columns;
+    test(`${kind.name}: a rename`, async () => {
+      const db = await withView(kind);
+      const changes = await db.diff({ tables: [renamed, u] });
+      expect(entries(changes)).toEqual(reflecting ? { steps: kind.materialized ? ['replaceView rewrite'] : [], diagnostics: ['info'] } : { steps: [], diagnostics: [] });
+      await db.apply(changes);
+      expect(await columnsOf(db, 'v')).toEqual(reflecting ? ['id', 'grp', 'x'] : ['id', 'g', 'x']);
+      expect((await db.diff({ tables: [renamed, u] })).steps).toEqual([]);
+    });
+
+    test(`${kind.name}: an added column`, async () => {
+      const db = await withView(kind);
+      const changes = await db.diff({ tables: [added, u] });
+      expect(entries(changes)).toEqual(reflecting ? { steps: kind.materialized ? ['replaceView rewrite'] : [], diagnostics: ['info'] } : { steps: [], diagnostics: [] });
+      await db.apply(changes);
+      expect(await columnsOf(db, 'v')).toEqual(reflecting ? ['id', 'g', 'x', 'y'] : ['id', 'g', 'x']);
+      if (kind.materialized) await db.refresh('v');
+    });
+
+    test(`${kind.name}: a dropped column`, async () => {
+      const db = await withView(kind);
+      const changes = await db.diff({ tables: [dropped, u] }, { allowDataLoss: 'certain' });
+      if (reflecting) {
+        // A view that passes the table through loses the column, as it gains an added one.
+        expect(entries(changes)).toEqual({ steps: kind.materialized ? ['replaceView rewrite'] : [], diagnostics: ['info'] });
+        await db.apply(changes, { allowDataLoss: 'certain' });
+        expect(await columnsOf(db, 'v')).toEqual(['id', 'g']);
+      } else {
+        expect(entries(changes).diagnostics).toEqual(['error']);
+        expect(changes.diagnostics.find((d) => d.object === 'v')?.message).toMatch(/^the change set breaks this view: no column named x/);
+        await expect(db.apply(changes, { allowDataLoss: 'certain' })).rejects.toThrow(/the change set has errors: v: the change set breaks this view/);
+      }
+    });
+
+    test(`${kind.name}: a dropped column it names is an error`, async () => {
+      const db = await fresh();
+      await db.createView('v', scan(t).pick('id', 'x'), { ...(kind.columns ? { columns: ['id', 'x'] } : {}), materialized: kind.materialized });
+      const changes = await db.diff({ tables: [dropped, u] }, { allowDataLoss: 'certain' });
+      expect(entries(changes)).toEqual({ steps: [], diagnostics: ['error'] });
+    });
+  }
+
+  test('a rename the engine does not edit (inside a rebuild) is a replaceView step', async () => {
+    const db = await fresh();
+    await db.createView('v', scan(t).pick('id', 'g'));
+    const want = table('t', { id: int().primaryKey(), grp: text().notNull().renamedFrom('g'), x: int() });
+    const changes = await db.diff({ tables: [want, u] }, { allowDataLoss: 'possible' });
+    expect(changes.steps.map((s) => `${s.action} ${s.object}`)).toEqual(['rebuildTable t', 'replaceView v']);
+    expect(changes.steps[1]!.reason).toBe('it reads a column a rebuild renames');
+    await db.apply(changes, { allowDataLoss: 'possible' });
+    expect(await db.rows(scan('v'))).toEqual([{ id: 1, g: 'a' }, { id: 2, g: 'b' }]);
+  });
+
+  test("an interface's type change: lossless to its type is a warning, otherwise an error", async () => {
+    const db = await fresh();
+    await db.createView('v', scan(t), { columns: ['id', 'x'] });
+    const toBool = await db.diff({ tables: [table('t', { id: int().primaryKey(), g: text(), x: bool() }), u] }, { allowDataLoss: 'possible' });
+    expect(toBool.diagnostics.filter((d) => d.object === 'v.x').map((d) => d.level)).toEqual(['warning']);
+    const toText = await db.diff({ tables: [table('t', { id: int().primaryKey(), g: text(), x: text() }), u] }, { allowDataLoss: 'possible' });
+    expect(toText.diagnostics.filter((d) => d.object === 'v.x').map((d) => `${d.level}: ${d.message}`)).toEqual([
+      "error: the interface's column becomes text, which doesn't convert losslessly to its int: change the view in the same change set",
+    ]);
+  });
+
+  test('a view of another view follows a change to the table under both', async () => {
+    const db = await fresh();
+    await db.createView('base', scan(t));
+    await db.createView('top', scan('base').pick('id', 'g'), { materialized: true });
+    const changes = await db.diff({ tables: [renamed, u] });
+    expect(changes.diagnostics.find((d) => d.object === 'top')?.level).toBe('error');
   });
 });

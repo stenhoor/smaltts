@@ -165,11 +165,11 @@ await db.apply(changes, { allowDataLoss: 'none', label: 'v1' });
 | | | |
 |---|---|---|
 | `db.diff(desired, { prune? })` | A `ChangeSet` that brings the database to `desired` (`{ tables }`). Tables not in `desired` are reported, and dropped only with `prune`. | Prototype |
-| `diffCatalog(tables, desired, options?)` | The same, from specs alone, with no database. | Prototype |
+| `diffCatalog(tables, desired, options?, views?)` | The same, from specs alone, with no database; with a catalog's `views`, the views are checked as `db.diff` checks them. | Prototype |
 | `db.apply(changes, policy?)` | Runs a change set in one transaction if the policy allows it, and records it in `smaltts_history`. Takes a change set parsed from JSON as it is. | Prototype |
 | `db.migrate(desired, policy?)` | `diff`, then `apply`. | Prototype |
 | `describe(changes)` | The change set as text, for review. | Prototype |
-| `db.migrateFiles(dir)` | Replays saved change-set files in order, refusing edited ones. | Planned (milestone 4, after gate A) |
+| `db.migrateFiles(dir)` | Replays saved change-set files in order, refusing edited ones. | Planned (milestone 4) |
 
 **`ChangeSet`:** `{ steps, diagnostics, impact, dataLoss, checksum }`, JSON. Each step is `{ action, object, impact,
 dataLoss, reason, statements }`, where `statements` are the engine statements it runs.
@@ -184,6 +184,7 @@ dataLoss, reason, statements }`, where `statements` are the engine statements it
 | `dropIndex` | `metadata` | `none` |
 | `rebuildTable` (a change the engine can't make in place: type, nullability, collation, default, keys, CHECKs, foreign keys, storage, column order, or renaming a column a CHECK or computed default reads) | `rewrite` | `none`, `possible` or `certain`, by the conversion table of [DESIGN.md 8.3](DESIGN.md#_8-3-type-changes-decided-by-types-never-by-data), never by the data |
 | `dropTable` (with `prune`) | `metadata` | `certain` |
+| `replaceView` (a reflecting materialized view whose columns change; a view reading a column a rebuild renames): drops the view and creates it again with its source as it should read, a materialized one filled again | `rewrite` (materialized), `metadata` | `none` |
 
 **Type changes** in a rebuild are converted with the engine's cast for the pair and classified by the conversion table
 ([DESIGN.md 8.3](DESIGN.md#_8-3-type-changes-decided-by-types-never-by-data)): lossless pairs (`INTEGER` to
@@ -192,6 +193,15 @@ data loss `none`; pairs that can change or fail (`REAL` to `INTEGER`, `TEXT` to 
 `DATE`) are `possible`; a pair with no conversion is an error diagnostic, and `apply` refuses the change set. A
 NOT NULL column added with no default makes a rebuild `possible` (it fails on a table with rows). Columnar tables are
 rebuilt through a row-storage staging table (smaltdb finding F4).
+
+**Views over a changed table** are checked against the change set (see [Views](#views)):
+
+| | Diagnostic | Step |
+|---|---|---|
+| A view the change set breaks (a column it names or filters on is dropped, a table it reads is dropped) | `error`: `apply` refuses | |
+| An interface's column changes type: lossless to its type / otherwise | `warning` / `error` | |
+| A reflecting view's columns change (renamed, added, dropped, retyped) | `info`, with the old and new columns | `replaceView` if materialized |
+| A view reads a column a rebuild renames (the engine edits only in-place renames) | | `replaceView` |
 
 **`ApplyPolicy`:** `{ allowDataLoss?: 'none' | 'possible' | 'certain', maxImpact?: Impact, label?: string }`.
 `allowDataLoss` defaults to `none`. A change set with error diagnostics is refused.
@@ -355,8 +365,9 @@ What a change underneath does to each kind of view:
 | | Reflecting view | Interface view |
 |---|---|---|
 | A column it reads is renamed | a column it passes through takes the new name; a column it names itself (`select`, `pick`, an aggregate) keeps its name | it reads the new name; its output doesn't change |
-| A column is added to a table it reads in full | it gains the column (a materialized view must be recreated: milestone 6, next) | it doesn't change |
-| A column it reads is dropped | the engine refuses the drop | the engine refuses the drop |
+| A column is added to a table it reads in full | it gains the column (a materialized view is recreated: `replaceView`) | it doesn't change |
+| A column it passes through is dropped | it loses the column (a materialized view is recreated) | an error in the change set |
+| A column it names or filters on is dropped | an error in the change set (the engine refuses the drop too) | an error in the change set |
 
 A rename follows the column, not its name: a column of the same name in another table the view reads is untouched.
 Which type changes an interface allows is specified in [DESIGN.md section 8.3](DESIGN.md#_8-3-type-changes-decided-by-types-never-by-data);
