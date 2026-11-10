@@ -89,7 +89,9 @@ Size: S if gate A chooses live diff only (a drift check only), M otherwise.
 
 ## 5. Typed plans, the full format
 
-Size: M.
+Size: M. Status: in progress: the relation operations (joins of every kind, set operations, `limit` from the end,
+`distinct` keeping a row, ordered aggregates, sample, explode, pivot, unpivot, values from columns) in review; windows,
+subqueries, `iterate` and the table of signatures next.
 
 - A builder for each plan operation (DESIGN.md section 7): windows, set operations, subqueries, `iterate`, pivot and
   unpivot, asof joins, sample, explode, ordered joins and aggregates, `limit` from the end, `distinct` keeping a row.
@@ -169,7 +171,7 @@ Size: M. Needs smaltdb's 0.9.0 publish.
 | 2 | Types in specs | M | done (2026-11-10) |
 | 3 | Diff complete | L | done (2026-11-10) |
 | 4 | Saved change sets | S–M | gate A |
-| 5 | Typed plans | M | 1 |
+| 5 | Typed plans | M | 1; in progress |
 | 6 | Views | M | 3, 5; part 2 on smaltdb E10 (L); gate B |
 | 7 | Flows | L | 3, 5; gate C |
 | 8 | Plan review | S | 5; costs on smaltdb E2 (M) |
