@@ -14,10 +14,13 @@ import type * as plan from 'smaltdb/plan';
 import type { PlanStatementInput } from 'smaltdb/plan';
 import * as P from 'smaltdb/plan';
 import type { Backend } from './backend.js';
-import { type Catalog, readCatalog } from './catalog.js';
+import { type Catalog, type CatalogViewInfo, readCatalog } from './catalog.js';
 import { conversion } from './conversions.js';
 import { toColumnDef, toIndexDef, toTableDef } from './ddl.js';
-import { type CheckSpec, type ColumnSpec, type ForeignKeySpec, type IndexSpec, type SchemaSpec, type TableSpec, columnIndex, columnPlanType } from './spec.js';
+import { type Field, type RelNode, compileRel } from './rel.js';
+import { LANGUAGE, type ViewSource } from './source.js';
+import { type CheckSpec, type ColumnSpec, type ForeignKeySpec, type IndexSpec, type SchemaSpec, type StorageType, type TableSpec, columnIndex, columnPlanType } from './spec.js';
+import { renameColumnIn, renameTableIn } from './views.js';
 
 /** How much a step costs and disrupts, from least to most. */
 export type Impact = 'metadata' | 'instant' | 'build' | 'rewrite';
@@ -27,7 +30,7 @@ export type DataLoss = 'none' | 'possible' | 'certain';
 const LOSSES: readonly DataLoss[] = ['none', 'possible', 'certain'];
 
 export interface Step {
-  readonly action: 'createTable' | 'dropTable' | 'renameTable' | 'addColumn' | 'dropColumn' | 'renameColumn' | 'rebuildTable' | 'createIndex' | 'dropIndex';
+  readonly action: 'createTable' | 'dropTable' | 'renameTable' | 'addColumn' | 'dropColumn' | 'renameColumn' | 'rebuildTable' | 'createIndex' | 'dropIndex' | 'replaceView';
   /** The object the step changes. */
   readonly object: string;
   readonly impact: Impact;
@@ -68,11 +71,18 @@ const findTable = (tables: readonly TableSpec<any>[], name: string) => tables.fi
 /** Compare a database (or its catalog) with the desired schema. */
 export async function diff(current: Backend | Catalog, desired: SchemaSpec, options: DiffOptions = {}): Promise<ChangeSet> {
   const catalog = 'run' in current ? await readCatalog(current) : current;
-  return diffCatalog(catalog.tables.filter((t) => !same(t.name, HISTORY_TABLE)), desired, options);
+  return diffCatalog(catalog.tables.filter((t) => !same(t.name, HISTORY_TABLE)), desired, options, catalog);
 }
 
-/** `diff` on specs alone, with no database. */
-export function diffCatalog(have: readonly TableSpec<any>[], desired: SchemaSpec, options: DiffOptions = {}): ChangeSet {
+/** What the differ reads of the database's views: the catalog's. */
+export type ViewsOf = Pick<Catalog, 'views' | 'table' | 'resultType'>;
+
+/**
+ * `diff` on specs alone, with no database. With `views` (a catalog's), each view that reads a changed table is checked
+ * against the change set (DESIGN.md section 8): a view the change breaks is an error, an interface's type change a
+ * warning or an error, a reflecting view's new shape a note, and a view the engine won't edit a `replaceView` step.
+ */
+export function diffCatalog(have: readonly TableSpec<any>[], desired: SchemaSpec, options: DiffOptions = {}, views?: ViewsOf): ChangeSet {
   const steps: Step[] = [];
   const diagnostics: Diagnostic[] = [];
   const claimed = new Set<string>();
@@ -102,12 +112,132 @@ export function diffCatalog(have: readonly TableSpec<any>[], desired: SchemaSpec
     }
   }
 
-  const order: Step['action'][] = ['renameTable', 'dropIndex', 'renameColumn', 'dropColumn', 'addColumn', 'rebuildTable', 'createTable', 'createIndex', 'dropTable'];
+  if (views) steps.push(...viewSteps(views, have, desired, options, steps, diagnostics));
+
+  const order: Step['action'][] = ['renameTable', 'dropIndex', 'renameColumn', 'dropColumn', 'addColumn', 'rebuildTable', 'createTable', 'createIndex', 'dropTable', 'replaceView'];
   steps.sort((a, b) => order.indexOf(a.action) - order.indexOf(b.action));
   for (const s of steps) {
     if (s.dataLoss === 'certain') diagnostics.push({ level: 'warning', object: s.object, message: `${s.action} loses data: ${s.reason}` });
   }
   return finish(steps, diagnostics);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Views over changed tables (DESIGN.md section 8).
+
+/** The storage type of a plan type, for the conversion table. */
+const STORAGE: Record<string, StorageType> = { int: 'INTEGER', real: 'REAL', num: 'NUMERIC', text: 'TEXT', blob: 'BLOB', any: 'ANY', bool: 'BOOLEAN', date: 'DATE', datetime: 'DATETIME', time: 'TIME', duration: 'DURATION' };
+const storageOf = (t: string): StorageType | undefined => STORAGE[t] ?? (t.startsWith('list<') ? 'LIST' : t.startsWith('struct<') ? 'STRUCT' : undefined);
+
+/** How a desired table continues one in the database: its old name and its columns' renames (old to new). */
+interface Continued {
+  readonly old: TableSpec<any>;
+  readonly want: TableSpec<any>;
+  readonly renames: readonly (readonly [string, string])[];
+  readonly rebuilt: boolean;
+}
+
+function viewSteps(views: ViewsOf, have: readonly TableSpec<any>[], desired: SchemaSpec, options: DiffOptions, steps: readonly Step[], diagnostics: Diagnostic[]): Step[] {
+  const continued: Continued[] = [];
+  const claimed = new Set<string>();
+  for (const want of desired.tables) {
+    const old = findTable(have, want.name) ?? (want.renamedFrom ? findTable(have, want.renamedFrom) : undefined);
+    if (!old) continue;
+    claimed.add(old.name.toLowerCase());
+    const renames = want.columns.flatMap((c) => {
+      if (old.columns.some((o) => same(o.name, c.name))) return [];
+      const prev = c.renamedFrom ? old.columns.find((o) => same(o.name, c.renamedFrom!)) : undefined;
+      return prev ? [[prev.name, c.name] as const] : [];
+    });
+    continued.push({ old, want, renames, rebuilt: steps.some((s) => s.action === 'rebuildTable' && same(s.object, want.name)) });
+  }
+  // The tables after the change set: the desired ones, and those it leaves alone.
+  const after = [...desired.tables, ...(options.prune ? [] : have.filter((t) => !claimed.has(t.name.toLowerCase()) && !findTable(desired.tables, t.name)))];
+
+  /** A view's relation as the engine leaves it (renames in place), and as it should read (every rename). */
+  const edited = (rel: RelNode, all: boolean): RelNode => {
+    let r = rel;
+    for (const c of continued) if (!same(c.old.name, c.want.name)) r = renameTableIn(r, c.old.name, c.want.name);
+    for (const c of continued) if (all || !c.rebuilt) for (const [from, to] of c.renames) r = renameColumnIn(r, c.want.name, from, to);
+    return r;
+  };
+
+  const ours = views.views.filter((v) => v.language === LANGUAGE);
+  const sources = new Map(ours.map((v) => [v.name.toLowerCase(), JSON.parse(v.definition) as ViewSource]));
+  const before = (name: string) => sources.get(name.toLowerCase())?.rel;
+  const now = (name: string) => {
+    const rel = before(name);
+    return rel && edited(rel, true);
+  };
+  const compileWith = (rel: RelNode, tables: readonly TableSpec<any>[], view: (n: string) => RelNode | undefined): Field[] =>
+    [...compileRel(rel, { table: (n) => findTable(tables, n) ?? (findTable(have, n) ? undefined : views.table(n)), view, ...(views.resultType ? { resultType: views.resultType } : {}) }).fields];
+
+  const out: Step[] = [];
+  for (const v of ours) {
+    const source = sources.get(v.name.toLowerCase())!;
+    let old: Field[];
+    try {
+      old = compileWith(source.rel, have, before);
+    } catch {
+      continue; // already broken: nothing this change set does to it
+    }
+    const rel = edited(source.rel, true);
+    let fields: Field[];
+    try {
+      fields = compileWith(rel, after, now);
+    } catch (e) {
+      diagnostics.push({ level: 'error', object: v.name, message: `the change set breaks this view: ${(e as Error).message}` });
+      continue;
+    }
+    const shape = (fs: readonly Field[]) => fs.map((f) => `${f.name} ${f.type}`).join(', ');
+    let rewrite = JSON.stringify(rel) !== JSON.stringify(edited(source.rel, false));
+    if (source.columns) {
+      // An interface: its names and order hold by construction; a type change must convert losslessly to the old type.
+      for (const [i, f] of fields.entries()) {
+        const was = old[i]!;
+        if (was.type === f.type) continue;
+        const from = storageOf(f.type);
+        const to = storageOf(was.type);
+        const conv = from && to ? conversion(from, to) : undefined;
+        if (!conv || conv.loss !== 'none') diagnostics.push({ level: 'error', object: `${v.name}.${f.name}`, message: `the interface's column becomes ${f.type}, which doesn't convert losslessly to its ${was.type}: change the view in the same change set` });
+        else diagnostics.push({ level: 'warning', object: `${v.name}.${f.name}`, message: `the interface's column becomes ${f.type} (lossless to its ${was.type}); its type is held once the engine holds interfaces (E10)` });
+      }
+    } else if (shape(old) !== shape(fields)) {
+      diagnostics.push({ level: 'info', object: v.name, message: `the view's columns follow the change: (${shape(old)}) → (${shape(fields)})` });
+      // A materialized view stores its columns: it is recreated and filled again.
+      if (v.materialized) rewrite = true;
+    }
+    if (rewrite) out.push(replaceViewStep(v, { ...source, rel }, v.materialized ? 'its stored columns change' : 'it reads a column a rebuild renames'));
+  }
+  return out;
+}
+
+/** Drop a view and create it again with `source` (a materialized one filled again). */
+function replaceViewStep(v: CatalogViewInfo, source: ViewSource, reason: string): Step {
+  const objectType = v.materialized ? 'materialized view' : 'view';
+  return {
+    action: 'replaceView',
+    object: v.name,
+    impact: v.materialized ? 'rewrite' : 'metadata',
+    dataLoss: 'none',
+    reason,
+    statements: [
+      { kind: 'schema', op: { op: 'drop', objectType, name: v.name, ifExists: false } },
+      {
+        kind: 'schema',
+        op: {
+          op: 'createView',
+          name: v.name,
+          temp: false,
+          ifNotExists: false,
+          ...(source.columns ? { columns: source.columns } : {}),
+          materialized: v.materialized,
+          ...(v.materialized ? { options: { storage: v.storage ?? 'row' }, withData: true } : {}),
+          source: { language: LANGUAGE, text: JSON.stringify(source) },
+        },
+      },
+    ],
+  };
 }
 
 function finish(steps: Step[], diagnostics: Diagnostic[]): ChangeSet {
