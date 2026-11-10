@@ -317,6 +317,7 @@ fails when the engine's list changes.
 ## Views
 
 ```ts
+import assert from 'node:assert/strict';
 import { Database } from 'smaltdb/engine';
 import { agg, attach, int, real, scan, table } from '@smaltworks/smaltts';
 import { registerSmaltts } from '@smaltworks/smaltts/language';
@@ -325,22 +326,41 @@ registerSmaltts();
 const db = attach(Database.openMemory());
 const orders = table('orders', { id: int().primaryKey(), customerId: int().notNull(), total: real().notNull() });
 await db.migrate({ tables: [orders] });
+await db.load(orders, [{ customerId: 1, total: 150 }]);
 
+// A reflecting view: its columns follow the table.
 await db.createView('big_orders', scan(orders).filter((o) => o.total.gt(100)));
+// An interface view: these columns, in this order, whatever changes underneath.
 const totals = scan(orders).aggregate((o) => ({ customerId: o.customerId }), (o) => ({ total: agg.sum(o.total) }));
-await db.createView('order_totals', totals, { materialized: true, storage: 'columnar' });
+await db.createView('order_totals', totals, { columns: ['customerId', 'total'], materialized: true, storage: 'columnar' });
 await db.refresh('order_totals', { concurrently: true });
+
+// Rename a column and add one: the reflecting view follows, the interface holds.
+await db.migrate({ tables: [table('orders', { id: int().primaryKey(), customer: int().notNull().renamedFrom('customerId'), total: real().notNull(), note: real() })] });
+assert.deepEqual(Object.keys((await db.rows(scan('big_orders')))[0]!), ['id', 'customer', 'total', 'note']);
+await db.refresh('order_totals');
+assert.deepEqual(await db.rows(scan('order_totals')), [{ customerId: 1, total: 150 }]);
 ```
 
 | | | |
 |---|---|---|
-| `db.createView(name, rel, { materialized?, storage?, populate?, replace? })` | Stores `rel` as a smaltts view, bound by name each time it is read. | Prototype |
-| `columns: [...]` or `columns: true` | Declares the view an **interface**: its column names and order are fixed (`true`: the relation's current columns). Without it the view is **reflecting** and follows the tables. | Planned (milestone 6) |
+| `db.createView(name, rel, { columns?, materialized?, storage?, populate?, replace? })` | Stores `rel` as a smaltts view, bound by name each time it is read. | Prototype |
+| `columns: [...]` or `columns: true` | Declares the view an **interface**: these of the relation's columns, in this order (`true`: all of them as they are now). Without it the view is **reflecting** and follows the tables. A column the relation doesn't have, or one listed twice, is refused. | Prototype (names and order; types with E10) |
+| `db.dropView(name, { materialized?, ifExists? })` | Drops a view. | Prototype |
 | `db.refresh(name, { concurrently?, ifChanged? })` | Fills a materialized view again. | Prototype |
+| `db.catalog().views` | Each view's `name`, `materialized`, `language`, `definition`, and `columns` when it is an interface (any language's column list) and `storage` when materialized. | Prototype |
 
-What a change underneath does to each kind of view, and which type changes an interface allows, is specified in
-[DESIGN.md section 8](DESIGN.md#_8-views-and-materialized-views). Typed interfaces that hold whichever language issues
-the DDL need the engine (E10).
+What a change underneath does to each kind of view:
+
+| | Reflecting view | Interface view |
+|---|---|---|
+| A column it reads is renamed | a column it passes through takes the new name; a column it names itself (`select`, `pick`, an aggregate) keeps its name | it reads the new name; its output doesn't change |
+| A column is added to a table it reads in full | it gains the column (a materialized view must be recreated: milestone 6, next) | it doesn't change |
+| A column it reads is dropped | the engine refuses the drop | the engine refuses the drop |
+
+A rename follows the column, not its name: a column of the same name in another table the view reads is untouched.
+Which type changes an interface allows is specified in [DESIGN.md section 8.3](DESIGN.md#_8-3-type-changes-decided-by-types-never-by-data);
+typed interfaces that hold whichever language issues the DDL need the engine (E10, stenhoor/smaltdb#188).
 
 ## Loads and writes
 

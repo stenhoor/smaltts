@@ -149,10 +149,11 @@ function tableSteps(old: TableSpec<any>, want: TableSpec<any>, diagnostics: Diag
     const why = columnChange(prev, c);
     if (why) rebuild.push(`${c.name}: ${why}`);
   }
-  if (!sameKey(old.primaryKey?.columns, want.primaryKey?.columns)) rebuild.push('the primary key changes');
-  if (!sameKeys(old.unique ?? [], want.unique ?? [])) rebuild.push('unique keys change');
-  // Constraints read back with the old column names: compare them as they read after the table's renames.
+  // Keys and constraints read back with the old column names: compare them as they read after the table's renames.
   const renamed = new Map([...matched].filter(([c, p]) => p.name !== c.name).map(([c, p]) => [p.name.toLowerCase(), c.name]));
+  const after = (cols?: readonly string[]) => cols?.map((c) => renamed.get(c.toLowerCase()) ?? c);
+  if (!sameKey(after(old.primaryKey?.columns), want.primaryKey?.columns)) rebuild.push('the primary key changes');
+  if (!sameKeys((old.unique ?? []).map((k) => ({ columns: after(k.columns)! })), want.unique ?? [])) rebuild.push('unique keys change');
   if (!sameChecks(old.checks ?? [], want.checks ?? [], renamed)) rebuild.push('CHECKs change');
   // A rename in place leaves a CHECK's or computed default's text with the old name (a table without source text has
   // no language to edit it), so renaming a column one of them reads is a rebuild, which writes the new text.

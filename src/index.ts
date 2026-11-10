@@ -14,3 +14,4 @@ export { type Signatures, SIGNED } from './signatures.js';
 export { type ExplainNode, type Explained, type LoadMode, type AsText, SmaltDb, attach } from './database.js';
 export { type Backend, type Result, type RunOptions, engineBackend, clientBackend, backendOf } from './backend.js';
 export { LANGUAGE, type ViewSource } from './source.js';
+export { renameColumnIn, renameTableIn, tablesOf } from './views.js';
