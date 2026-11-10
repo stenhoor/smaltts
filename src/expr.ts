@@ -8,6 +8,7 @@ import { AGGREGATE, SCALAR, type ScalarName } from './functions.js';
 import type { Collation, Value } from './spec.js';
 import type * as P from 'smaltdb/plan';
 import type { RelNode } from './rel.js';
+import type { Signatures } from './signatures.js';
 
 export type ExprNode =
   /**
@@ -119,8 +120,11 @@ export function caseWhen<T>(whens: readonly (readonly [Arg<Truth>, Arg<T>])[], o
   return new Expr({ k: 'case', whens: whens.map(([w, t]) => ({ when: toNode(w), then: toNode(t) })), ...(otherwise !== undefined ? { else: toNode(otherwise) } : {}) });
 }
 
-/** Every engine operation and scalar function, by its engine name: `fn.div_float(o.total, 2)`. */
-export const fn: { readonly [K in ScalarName]: (...args: Arg<any>[]) => Expr<TsOf<(typeof SCALAR)[K]> | null> } = new Proxy({} as never, {
+/**
+ * Every engine operation and scalar function, by its engine name: `fn.div_float(o.total, 2)`. Operations are typed by
+ * the table of signatures (signatures.ts); other functions loosely, with the engine's result type.
+ */
+export const fn: { readonly [K in ScalarName]: K extends keyof Signatures ? Signatures[K] : (...args: Arg<any>[]) => Expr<TsOf<(typeof SCALAR)[K]> | null> } = new Proxy({} as never, {
   get: (_, name) => (typeof name === 'string' && name in SCALAR ? (...args: unknown[]) => new Expr({ k: 'fn', name, args: args.map(toNode) }) : undefined),
 });
 

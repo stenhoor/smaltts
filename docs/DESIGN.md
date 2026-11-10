@@ -455,14 +455,20 @@ asof joins, sample, `ignoreNulls`, explode).
 
 ## 13. Prototype status
 
-The prototype (`src/`, 39 tests) runs against smaltdb 0.9.0 (`1ce660a`), re-based in milestone 1: expressions are the
-engine's operations by their engine names (`fn`, `agg`, and the aliases of section 7), the catalog comes from the
-engine's catalog API, tables and indexes are defined without source text, the language serves views only and has its
-own entry point, and every plan node carries an `origin`. Engine finding F1 is fixed, and its test passes.
+The prototype (`src/`, 131 tests) runs against smaltdb 0.9.0 (`1ce660a`).
 
-It still predates sections 5.1 (the engine's types in specs: milestone 2) and 8 (reflecting by default, column lists,
-the conversion table: milestone 6), and the client path is untested (milestone 10). Its dev dependencies were settled
-by the owner on 2026-11-10 (milestone 0): no `typescript`; smaltty, Node's types and vitest for development and tests.
+- **Milestone 1:** expressions are the engine's operations by their engine names (`fn`, `agg`, and the aliases of
+  section 7), the catalog comes from the engine's catalog API, tables and indexes are defined without source text, the
+  language serves views only and has its own entry point, and every plan node carries an `origin`.
+- **Milestone 2:** the engine's types in specs (section 5.1), with CHECKs, computed defaults and foreign keys.
+- **Milestone 3:** the complete differ, with the conversion table of section 8.3.
+- **Milestone 5:** one builder per plan operation (section 7), each compiling to the plan the raw builders give, and
+  correlated subqueries at any depth. The engine's operations are typed by a table of signatures
+  (`src/signatures.ts`), its other functions loosely, and every call's argument count is checked against the catalog.
+
+It still predates section 8's views (reflecting by default, column lists: milestone 6), and the client path is untested
+(milestone 10). Its dev dependencies were settled by the owner on 2026-11-10 (milestone 0): no `typescript`; smaltty,
+Node's types and vitest for development and tests. Engine findings F2–F4 are open, each pinned by a failing test.
 
 ## 14. Decisions and open questions
 

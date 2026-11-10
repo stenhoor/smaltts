@@ -10,7 +10,7 @@
  * (`.eq` is `cmp_eq`, `.and` the logic node).
  */
 import * as P from 'smaltdb/plan';
-import { AGGREGATE, SCALAR, type ScalarName } from './functions.js';
+import { AGGREGATE, ARITY, SCALAR, type ScalarName } from './functions.js';
 import { type Cols, type ExprNode, type Truth, Expr, toNode } from './expr.js';
 import { type Collation, type StorageType, type TableSpec, type Value, columnPlanType } from './spec.js';
 
@@ -628,6 +628,14 @@ function fieldIndex(fields: readonly Field[], name: string, call: string): numbe
   return i;
 }
 
+/** Refuses a call with an argument count the engine's catalog doesn't allow, naming the call. */
+function arity(call: string, name: string, given: number): void {
+  const [min, max] = ARITY[name] ?? [0, null];
+  if (given >= min && (max === null || given <= max)) return;
+  const takes = max === null ? `at least ${min}` : min === max ? `${min}` : `${min} to ${max}`;
+  throw new Error(`${call}: takes ${takes} argument${takes === '1' ? '' : 's'}, not ${given}`);
+}
+
 function sortKey(k: { readonly expr: ExprNode; readonly desc: boolean }, scopes: readonly (readonly Field[])[], ctx: Ctx): P.SortKey {
   const c = exprIn(k.expr, scopes, ctx);
   return k.desc ? P.desc(c.e, { collation: c.collation }) : P.asc(c.e, { collation: c.collation });
@@ -639,6 +647,7 @@ function windowCall(name: string, node: ExprNode, scopes: readonly (readonly Fie
   const def = AGGREGATE[node.name as keyof typeof AGGREGATE];
   if (!def) throw new Error(`window: no window function or aggregate named ${node.name}`);
   if (node.distinct) throw new Error(`window: agg.${node.name} can't be distinct in a window`);
+  arity(`window: agg.${node.name}`, node.name, node.args.length);
   const args = node.args.map((a) => exprIn(a, scopes, ctx));
   const type = (ctx.cat.resultType?.(node.name, args.map((a) => a.type)) ?? def.result) as P.PlanType;
   const filter = node.filter ? exprIn(node.filter, scopes, ctx).e : undefined;
@@ -652,6 +661,7 @@ function aggCall(call: string, name: string, node: ExprNode, scopes: readonly (r
   const def = AGGREGATE[node.name as keyof typeof AGGREGATE];
   if (!def) throw new Error(`${call}: no aggregate named ${node.name}`);
   if (def.kind !== 'aggregate') throw new Error(`${call}: agg.${node.name} is a window function; use it in window()`);
+  arity(`${call}: agg.${node.name}`, node.name, node.args.length);
   const args = node.args.map((a) => exprIn(a, scopes, ctx));
   const type = (cat.resultType?.(node.name, args.map((a) => a.type)) ?? def.result) as P.PlanType;
   const filter = node.filter ? exprIn(node.filter, scopes, ctx).e : undefined;
@@ -745,6 +755,7 @@ function exprIn(n: ExprNode, scopes: readonly (readonly Field[])[], ctx: Ctx): T
     }
     case 'fn': {
       if (!(n.name in SCALAR)) throw new Error(`fn.${n.name}: the engine has no such function`);
+      arity(`fn.${n.name}`, n.name, n.args.length);
       // A Date literal takes the temporal type of what it is compared or combined with (a date counts days).
       const isDate = (a: ExprNode) => a.k === 'lit' && a.date === true;
       const others = n.args.map((a) => (isDate(a) ? null : exprIn(a, scopes, ctx)));

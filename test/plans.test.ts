@@ -298,3 +298,30 @@ group('iterate and CASE', () => {
     expect((await same(rel, raw)).map((r) => r.size)).toEqual(['small', 'small', 'big', 'none', 'big']);
   });
 });
+
+group('the common pipelines compile to the raw plan, node for node', () => {
+  test('filter, join, aggregate, sort (DESIGN.md section 7)', async () => {
+    const rel = scan(t)
+      .filter((r) => r.y.gte(param.real('min')))
+      .join(scan(u), (a, b) => a.id.eq(b.u_tid), { prefix: 'u_' })
+      .aggregate((r) => ({ g: r.g }), (r) => ({ total: agg.sum(r.x), n: agg.count() }))
+      .sort('-total');
+    const joined = P.join('inner', P.filter(tScan, P.call('cmp_ge', [T.y, P.param(0, 'real')], 'bool', 'binary')), uScan, eq(T.id, P.col(1, 1, 'int')));
+    const raw = P.sort(P.aggregate(joined, [T.g], [P.agg('sum', [T.x], 'int'), P.agg('count', [], 'int', { star: true })], { collations: ['binary'] }), [P.desc(P.col(0, 1, 'int'))]);
+    expect(await same(rel, raw, { min: 1 }, [1])).toEqual([{ g: 'b', total: 30, n: 1 }, { g: 'a', total: 20, n: 2 }]);
+  });
+
+  test('extend, pick, distinct, limit', async () => {
+    const rel = scan(t).extend((r) => ({ x2: fn.mul(r.x, 2) })).pick('g', 'x2').distinct().limit(3);
+    const c = await db.compile(rel);
+    const mul = P.call('mul', [T.x, P.lit(2)], c.fields[1]!.type);
+    const extended = P.project(tScan, [T.id, T.g, T.x, T.y, mul]);
+    const raw = P.limit(P.distinct(P.project(extended, [P.col(0, 1, 'text'), P.col(0, 4, c.fields[1]!.type)]), 2), 3);
+    expect(await same(rel, raw)).toHaveLength(3);
+  });
+
+  test('a call with the wrong number of arguments is refused, naming it', async () => {
+    await expect(db.compile(scan(t).select((r) => ({ v: (fn.add as (...a: unknown[]) => never)(r.x, 1, 2) })))).rejects.toThrow(/^fn.add: takes 2 arguments, not 3/);
+    await expect(db.compile(scan(t).aggregate(() => ({}), (r) => ({ v: agg.sum(r.x, r.y) })))).rejects.toThrow(/^aggregate: agg.sum: takes 1 argument, not 2/);
+  });
+});
