@@ -11,10 +11,10 @@
  */
 import * as P from 'smaltdb/plan';
 import { AGGREGATE, SCALAR, type ScalarName } from './functions.js';
-import { type Cols, type ExprNode, type Truth, Expr, col, toNode } from './expr.js';
+import { type Cols, type ExprNode, type Truth, Expr, toNode } from './expr.js';
 import { type Collation, type StorageType, type TableSpec, type Value, columnPlanType } from './spec.js';
 
-export { type AggOptions, type Arg, type Cols, type ExprNode, type Truth, Expr, agg, and, col, fn, lit, not, or, param } from './expr.js';
+export { type AggOptions, type Arg, type Cols, type ExprNode, type OneColumn, type Truth, Expr, agg, and, caseWhen, col, exists, fn, lit, not, or, param, scalar } from './expr.js';
 
 export interface ColumnType {
   readonly name: string;
@@ -23,6 +23,20 @@ export interface ColumnType {
 }
 
 export type JoinKind = 'inner' | 'left' | 'right' | 'full' | 'semi' | 'anti' | 'cross' | 'asof';
+
+/** A window frame bound; `offset` (for `preceding` and `following`) counts rows, peer groups or a value's distance. */
+export interface FrameBound {
+  readonly kind: 'unboundedPreceding' | 'preceding' | 'currentRow' | 'following' | 'unboundedFollowing';
+  readonly offset?: number;
+}
+
+/** A window frame: the engine's, with numbers for offsets. */
+export interface Frame {
+  readonly unit: 'ROWS' | 'RANGE' | 'GROUPS';
+  readonly start: FrameBound;
+  readonly end: FrameBound;
+  readonly exclude?: 'NO OTHERS' | 'CURRENT ROW' | 'GROUP' | 'TIES';
+}
 
 /** A count or fraction: a number, or an expression over no columns (a parameter). */
 export type Amount = number | ExprNode;
@@ -62,6 +76,17 @@ export type RelNode =
       readonly aggs: readonly (readonly [string, ExprNode])[];
       readonly ordered?: true;
     }
+  | {
+      readonly r: 'window';
+      readonly input: RelNode;
+      readonly partition: readonly string[];
+      readonly order: readonly { readonly expr: ExprNode; readonly desc: boolean }[];
+      readonly frame?: Frame;
+      readonly calls: readonly (readonly [string, ExprNode])[];
+    }
+  /** Recursion: `init`'s rows, then `step`'s over the rows the previous step gave (`working` with the same name). */
+  | { readonly r: 'iterate'; readonly name: string; readonly init: RelNode; readonly step: RelNode; readonly distinct?: true }
+  | { readonly r: 'working'; readonly name: string }
   | { readonly r: 'unpivot'; readonly input: RelNode; /** Absent: every column not unpivoted. */ readonly keep?: readonly string[]; readonly columns: readonly string[]; readonly name: string; readonly value: string };
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -76,9 +101,32 @@ type Pred = Expr<Truth>;
 type Names<Row> = keyof Row & string;
 type ElementOf<T> = T extends readonly (infer E)[] ? E | null : unknown;
 
-function colsProxy<R>(): Cols<R> {
-  return new Proxy({} as Cols<R>, { get: (_, name) => (typeof name === 'string' ? col(name) : undefined) });
+let scopes = 0;
+
+/**
+ * The columns a builder call hands its callbacks, and how it binds what they return. A reference is tagged with the
+ * call's scope; binding removes the tag from the call's own references, and turns those inside a subquery into
+ * correlated ones (`outer`: how many subqueries in). A relation built inside a callback binds its own references first,
+ * so what remains tagged in it belongs to an enclosing call. The JSON that results has no tags.
+ */
+function scope<R>(): { cols: Cols<R>; bind: <T>(v: T) => T } {
+  const id = ++scopes;
+  const cols = new Proxy({} as Cols<R>, { get: (_, name) => (typeof name === 'string' ? new Expr({ k: 'col', name, scope: id }) : undefined) });
+  return { cols, bind: (v) => bind(id, v, 0) };
 }
+
+function bind<T>(id: number, v: T, depth: number): T {
+  if (Array.isArray(v)) return v.map((x) => bind(id, x, depth)) as T;
+  if (!v || typeof v !== 'object' || ArrayBuffer.isView(v)) return v;
+  const o = v as Record<string, unknown>;
+  if (o.k === 'col' && o.scope === id) return (depth ? { k: 'col', name: o.name, outer: depth } : { k: 'col', name: o.name }) as T;
+  const sub = o.k === 'exists' || o.k === 'scalar' || o.k === 'inRel';
+  return Object.fromEntries(Object.entries(o).map(([k, x]) => [k, bind(id, x, sub && k === 'rel' ? depth + 1 : depth)])) as T;
+}
+
+type SortKeys<Row> = readonly (`${Names<Row>}` | `-${Names<Row>}`)[];
+const sortKeys = (keys: readonly string[]): { expr: ExprNode; desc: boolean }[] =>
+  keys.map((k) => (k.startsWith('-') ? { expr: { k: 'col', name: k.slice(1) }, desc: true } : { expr: { k: 'col', name: k }, desc: false }));
 
 const fieldsOf = (f: Fields): (readonly [string, ExprNode])[] => Object.entries(f).map(([n, e]) => [n, e.node] as const);
 const amount = (v: number | Expr<number>): Amount => (typeof v === 'number' ? v : v.node);
@@ -108,15 +156,18 @@ export class Rel<Row extends AnyRow = AnyRow> {
 
   /** Keep the rows where `pred` is true. */
   filter(pred: (r: Cols<Row>) => Pred): Rel<Row> {
-    return new Rel({ r: 'filter', input: this.node, pred: pred(colsProxy<Row>()).node });
+    const s = scope<Row>();
+    return new Rel({ r: 'filter', input: this.node, pred: s.bind(pred(s.cols).node) });
   }
   /** Compute a new set of columns. */
   select<F extends Fields>(fields: (r: Cols<Row>) => F): Rel<RowOfFields<F>> {
-    return new Rel({ r: 'select', input: this.node, fields: fieldsOf(fields(colsProxy<Row>())) });
+    const s = scope<Row>();
+    return new Rel({ r: 'select', input: this.node, fields: s.bind(fieldsOf(fields(s.cols))) });
   }
   /** Keep every column and add (or replace) some. */
   extend<F extends Fields>(fields: (r: Cols<Row>) => F): Rel<Omit<Row, keyof F> & RowOfFields<F>> {
-    return new Rel({ r: 'select', input: this.node, fields: [['*', { k: 'lit', value: null }], ...fieldsOf(fields(colsProxy<Row>()))] });
+    const s = scope<Row>();
+    return new Rel({ r: 'select', input: this.node, fields: [['*', { k: 'lit', value: null }], ...s.bind(fieldsOf(fields(s.cols)))] });
   }
   /** Keep only these columns, in this order. */
   pick<K extends Names<Row>>(...names: K[]): Rel<Pick<Row, K>> {
@@ -159,9 +210,10 @@ export class Rel<Row extends AnyRow = AnyRow> {
     keys: (l: Cols<Row>, r: Cols<Prefixed<S, Px>>) => readonly [Expr<unknown>, Expr<unknown>],
     options: AsofOptions<Row, S, Px> = {},
   ): Rel<Row & Nullable<Prefixed<S, Px>>> {
-    const [l, r] = keys(colsProxy(), colsProxy());
+    const s = scope<any>();
+    const [l, r] = keys(s.cols, s.cols);
     const tolerance = options.tolerance === undefined ? undefined : toNode(options.tolerance);
-    const asof = { left: l.node, right: r.node, direction: options.direction ?? 'backward', ...(tolerance ? { tolerance } : {}) } as const;
+    const asof = { left: s.bind(l.node), right: s.bind(r.node), direction: options.direction ?? 'backward', ...(tolerance ? { tolerance } : {}) } as const;
     return new Rel({ ...this.joinNode('asof', right, options.on, options), asof });
   }
   private joinOf(kind: JoinKind, right: Rel<any>, on: ((l: any, r: any) => Pred) | undefined, options: JoinOptions<string>): Rel<any> {
@@ -169,7 +221,8 @@ export class Rel<Row extends AnyRow = AnyRow> {
   }
   private joinNode(kind: JoinKind, right: Rel<any>, on: ((l: any, r: any) => Pred) | undefined, options: JoinOptions<string>): Extract<RelNode, { r: 'join' }> {
     // Both sides' columns are referenced by name; collisions are resolved (or rejected) when the plan is compiled.
-    const pred = on?.(colsProxy(), colsProxy()).node;
+    const s = scope<any>();
+    const pred = on ? s.bind(on(s.cols, s.cols).node) : undefined;
     return {
       r: 'join',
       kind,
@@ -185,12 +238,28 @@ export class Rel<Row extends AnyRow = AnyRow> {
    * of their first row.
    */
   aggregate<K extends Fields, A extends Fields>(keys: (r: Cols<Row>) => K, aggs: (r: Cols<Row>) => A, options: { ordered?: boolean } = {}): Rel<RowOfFields<K> & RowOfFields<A>> {
-    const c = colsProxy<Row>();
-    return new Rel({ r: 'aggregate', input: this.node, keys: fieldsOf(keys(c)), aggs: fieldsOf(aggs(c)), ...(options.ordered ? { ordered: true as const } : {}) });
+    const s = scope<Row>();
+    return new Rel({ r: 'aggregate', input: this.node, keys: s.bind(fieldsOf(keys(s.cols))), aggs: s.bind(fieldsOf(aggs(s.cols))), ...(options.ordered ? { ordered: true as const } : {}) });
   }
   /** Order rows; prefix a column with `-` for descending: `sort('-total', 'name')`. */
-  sort(...keys: (`${Names<Row>}` | `-${Names<Row>}`)[]): Rel<Row> {
-    return new Rel({ r: 'sort', input: this.node, keys: keys.map((k) => (k.startsWith('-') ? { expr: { k: 'col', name: k.slice(1) }, desc: true } : { expr: { k: 'col', name: k }, desc: false })) });
+  sort(...keys: SortKeys<Row>): Rel<Row> {
+    return new Rel({ r: 'sort', input: this.node, keys: sortKeys(keys) });
+  }
+  /**
+   * Window functions and aggregates over each row's window: every column, then one per call. Rows are grouped by the
+   * `partition` columns and ordered by `order` (as `sort`'s keys) within it; the frame defaults to the partition's rows
+   * up to the current row and its peers (the whole partition without an order).
+   */
+  window<F extends Fields>(calls: (r: Cols<Row>) => F, options: { partition?: readonly Names<Row>[]; order?: SortKeys<Row>; frame?: Frame } = {}): Rel<Row & RowOfFields<F>> {
+    const s = scope<Row>();
+    return new Rel({
+      r: 'window',
+      input: this.node,
+      partition: options.partition ?? [],
+      order: sortKeys(options.order ?? []),
+      ...(options.frame ? { frame: options.frame } : {}),
+      calls: s.bind(fieldsOf(calls(s.cols))),
+    });
   }
   /** The first `count` rows after `offset`; `fromEnd`: the last `count` rows before the last `offset`, in order. */
   limit(count: number | Expr<number>, offset?: number | Expr<number>, options: { fromEnd?: boolean } = {}): Rel<Row> {
@@ -263,14 +332,14 @@ export class Rel<Row extends AnyRow = AnyRow> {
     aggs: (r: Cols<Row>) => Fields;
     ordered?: boolean;
   }): Rel<RowOfFields<K> & AnyRow> {
-    const c = colsProxy<Row>();
+    const s = scope<Row>();
     return new Rel({
       r: 'pivot',
       input: this.node,
-      keys: fieldsOf(options.keys(c)),
-      on: options.on(c).node,
+      keys: s.bind(fieldsOf(options.keys(s.cols))),
+      on: s.bind(options.on(s.cols).node),
       values: options.values,
-      aggs: fieldsOf(options.aggs(c)),
+      aggs: s.bind(fieldsOf(options.aggs(s.cols))),
       ...(options.ordered ? { ordered: true as const } : {}),
     });
   }
@@ -316,6 +385,15 @@ export function tableFunction<Row extends AnyRow = AnyRow>(name: string, args: r
   return new Rel({ r: 'function', name, args, columns, ...(named ? { named } : {}) });
 }
 
+/**
+ * Recursion: `init`'s rows, then `step`'s, applied to the rows the previous step gave, until a step gives none.
+ * `distinct` drops rows given before (and so ends cycles). Each step's rows have `init`'s columns.
+ */
+export function iterate<Row extends AnyRow>(init: Rel<Row>, step: (previous: Rel<Row>) => Rel<Row>, options: { distinct?: boolean; name?: string } = {}): Rel<Row> {
+  const name = options.name ?? 'iterate';
+  return new Rel({ r: 'iterate', name, init: init.node, step: step(new Rel({ r: 'working', name })).node, ...(options.distinct ? { distinct: true as const } : {}) });
+}
+
 export function relFromJSON<Row extends AnyRow = AnyRow>(node: RelNode): Rel<Row> {
   return new Rel(node);
 }
@@ -350,22 +428,36 @@ export interface Compiled {
 
 /** Compile a relation to the engine's plan. */
 export function compileRel(rel: Rel<any> | RelNode, resolver: Resolver): Compiled {
-  const params: string[] = [];
-  const out = compile(rel instanceof Rel ? rel.node : rel, resolver, params);
-  return { ...out, params };
+  const ctx = context(resolver, []);
+  const out = compile(rel instanceof Rel ? rel.node : rel, ctx);
+  return { ...out, params: ctx.params };
 }
+
+/** What compiling carries down the tree. */
+interface Ctx {
+  readonly cat: Resolver;
+  readonly params: string[];
+  /** The scopes of the operations a subquery is nested in, innermost first: what an outer column reference reads. */
+  readonly outer: readonly (readonly (readonly Field[])[])[];
+  /** The open `iterate`s, by name: their ids and their rows' fields. */
+  readonly working: ReadonlyMap<string, { readonly id: number; readonly fields: readonly Field[] }>;
+  readonly ids: { n: number };
+}
+
+const context = (cat: Resolver, params: string[]): Ctx => ({ cat, params, outer: [], working: new Map(), ids: { n: 0 } });
 
 /** Where a plan node came from, given back on the engine's errors (ADR 0016 §10). */
 const origin = (call: string): { readonly origin: P.PlanOrigin } => ({ origin: { smaltts: call } });
 
-function compile(n: RelNode, cat: Resolver, params: string[]): { plan: P.PlanOp; fields: Field[] } {
+function compile(n: RelNode, ctx: Ctx): { plan: P.PlanOp; fields: Field[] } {
+  const cat = ctx.cat;
   const at = (plan: P.PlanOp, call: string): P.PlanOp => ({ ...plan, ...origin(call) }) as P.PlanOp;
   switch (n.r) {
     case 'scan': {
       const t = cat.table(n.table);
       if (t) return { plan: at(P.scan(t.name, t.columns.map((_, i) => i)), 'scan'), fields: t.columns.map((c) => ({ name: c.name, type: columnPlanType(c), collation: c.collation ?? 'binary' })) };
       const view = cat.view?.(n.table);
-      if (view) return compile(view, cat, params);
+      if (view) return compile(view, ctx);
       const names = cat.foreignView?.(n.table);
       if (names) return { plan: at(P.scan(n.table, names.map((_, i) => i)), 'scan'), fields: names.map((name) => ({ name, type: 'any', collation: 'binary' })) };
       throw new Error(`scan: no table or view named ${n.table}`);
@@ -380,11 +472,11 @@ function compile(n: RelNode, cat: Resolver, params: string[]): { plan: P.PlanOp;
       return { plan: at({ op: 'source', kind: 'function', name: n.name, args: n.args.map((v) => P.lit(v)), ...(named ? { named } : {}), types }, 'tableFunction'), fields: n.columns.map((c, i) => ({ name: c.name, type: types[i]!, collation: 'binary' })) };
     }
     case 'filter': {
-      const input = compile(n.input, cat, params);
-      return { plan: at(P.filter(input.plan, expr(n.pred, [input.fields], params, cat).e), 'filter'), fields: input.fields };
+      const input = compile(n.input, ctx);
+      return { plan: at(P.filter(input.plan, exprIn(n.pred, [input.fields], ctx).e), 'filter'), fields: input.fields };
     }
     case 'select': {
-      const input = compile(n.input, cat, params);
+      const input = compile(n.input, ctx);
       const fields: Field[] = [];
       const exprs: P.PlanExpr[] = [];
       const star = n.fields[0]?.[0] === '*';
@@ -398,7 +490,7 @@ function compile(n: RelNode, cat: Resolver, params: string[]): { plan: P.PlanOp;
         });
       }
       for (const [name, node] of computed) {
-        const c = expr(node, [input.fields], params, cat);
+        const c = exprIn(node, [input.fields], ctx);
         fields.push({ name, type: c.type, collation: c.collation });
         exprs.push(c.e);
       }
@@ -409,16 +501,16 @@ function compile(n: RelNode, cat: Resolver, params: string[]): { plan: P.PlanOp;
       return { plan: at(P.fromColumns(n.data, types), 'fromColumns'), fields: n.columns.map((c, i) => ({ name: c.name, type: types[i]!, collation: 'binary' })) };
     }
     case 'join': {
-      const left = compile(n.left, cat, params);
-      const right = compile(n.right, cat, params);
+      const left = compile(n.left, ctx);
+      const right = compile(n.right, ctx);
       const rightFields = right.fields.map((f) => ({ ...f, name: (n.prefix ?? '') + f.name }));
       const scopes = [left.fields, rightFields];
-      const on = n.on ? expr(n.on, scopes, params, cat).e : undefined;
+      const on = n.on ? exprIn(n.on, scopes, ctx).e : undefined;
       const call = JOIN_CALL[n.kind];
       let plan: P.PlanOp = P.join(n.kind, left.plan, right.plan, on, { ordered: !!n.ordered });
       if (n.asof) {
-        const tolerance = n.asof.tolerance ? expr(n.asof.tolerance, [], params, cat).e : undefined;
-        plan = P.asofJoin(left.plan, right.plan, expr(n.asof.left, scopes, params, cat).e, expr(n.asof.right, scopes, params, cat).e, { direction: n.asof.direction, ...(tolerance ? { tolerance } : {}), ...(on ? { on } : {}) });
+        const tolerance = n.asof.tolerance ? exprIn(n.asof.tolerance, [], ctx).e : undefined;
+        plan = P.asofJoin(left.plan, right.plan, exprIn(n.asof.left, scopes, ctx).e, exprIn(n.asof.right, scopes, ctx).e, { direction: n.asof.direction, ...(tolerance ? { tolerance } : {}), ...(on ? { on } : {}) });
         if (n.ordered) plan = { ...plan, ordered: true } as P.PlanOp;
       }
       if (n.kind === 'semi' || n.kind === 'anti') return { plan: at(plan, call), fields: left.fields };
@@ -428,30 +520,26 @@ function compile(n: RelNode, cat: Resolver, params: string[]): { plan: P.PlanOp;
       return { plan: at(plan, call), fields: [...left.fields, ...rightFields] };
     }
     case 'aggregate': {
-      const input = compile(n.input, cat, params);
-      const keys = n.keys.map(([name, node]) => ({ name, ...expr(node, [input.fields], params, cat) }));
-      const aggs = n.aggs.map(([name, node]) => ({ name, ...aggCall('aggregate', name, node, [input.fields], params, cat) }));
+      const input = compile(n.input, ctx);
+      const keys = n.keys.map(([name, node]) => ({ name, ...exprIn(node, [input.fields], ctx) }));
+      const aggs = n.aggs.map(([name, node]) => ({ name, ...aggCall('aggregate', name, node, [input.fields], ctx) }));
       return {
         plan: at(P.aggregate(input.plan, keys.map((k) => k.e), aggs.map((a) => a.call), { collations: keys.map((k) => k.collation), ...(n.ordered ? { ordered: 'first' as const } : {}) }), 'aggregate'),
         fields: [...keys.map((k) => ({ name: k.name, type: k.type, collation: k.collation })), ...aggs.map((a) => ({ name: a.name, type: a.type, collation: 'binary' as Collation }))],
       };
     }
     case 'sort': {
-      const input = compile(n.input, cat, params);
-      const keys = n.keys.map((k) => {
-        const c = expr(k.expr, [input.fields], params, cat);
-        return k.desc ? P.desc(c.e, { collation: c.collation }) : P.asc(c.e, { collation: c.collation });
-      });
-      return { plan: at(P.sort(input.plan, keys), 'sort'), fields: input.fields };
+      const input = compile(n.input, ctx);
+      return { plan: at(P.sort(input.plan, n.keys.map((k) => sortKey(k, [input.fields], ctx))), 'sort'), fields: input.fields };
     }
     case 'limit': {
-      const input = compile(n.input, cat, params);
-      const count = typeof n.count === 'number' ? n.count : expr(n.count, [], params, cat).e;
-      const offset = n.offset === undefined || typeof n.offset === 'number' ? n.offset : expr(n.offset, [], params, cat).e;
+      const input = compile(n.input, ctx);
+      const count = typeof n.count === 'number' ? n.count : exprIn(n.count, [], ctx).e;
+      const offset = n.offset === undefined || typeof n.offset === 'number' ? n.offset : exprIn(n.offset, [], ctx).e;
       return { plan: at(P.limit(input.plan, count, offset, { fromEnd: !!n.fromEnd }), 'limit'), fields: input.fields };
     }
     case 'distinct': {
-      const input = compile(n.input, cat, params);
+      const input = compile(n.input, ctx);
       const on = n.on?.map((name) => fieldIndex(input.fields, name, 'distinct'));
       const options = { ...(n.ordered ? { ordered: 'first' as const } : {}), ...(on ? { on } : {}), ...(n.keep ? { keep: n.keep } : {}) };
       return { plan: at(P.distinct(input.plan, input.fields.length, input.fields.map((f) => f.collation), options), 'distinct'), fields: input.fields };
@@ -460,20 +548,20 @@ function compile(n: RelNode, cat: Resolver, params: string[]): { plan: P.PlanOp;
     case 'setop': {
       const kind = n.r === 'union' ? (n.all ? 'unionAll' : 'union') : n.kind;
       const call = n.r === 'union' ? 'union' : n.kind;
-      const a = compile(n.inputs[0], cat, params);
-      const b = compile(n.inputs[1], cat, params);
+      const a = compile(n.inputs[0], ctx);
+      const b = compile(n.inputs[1], ctx);
       const names = (fs: Field[]) => fs.map((f) => f.name.toLowerCase()).join(',');
       if (names(a.fields) !== names(b.fields)) throw new Error(`${call}: the inputs have different columns (${names(a.fields)} / ${names(b.fields)})`);
       return { plan: at(P.setop(kind, a.plan, b.plan, a.fields.length, a.fields.map((f) => f.collation)), call), fields: a.fields };
     }
     case 'sample': {
-      const input = compile(n.input, cat, params);
-      const size = (v: Amount) => (typeof v === 'number' ? v : expr(v, [], params, cat).e);
+      const input = compile(n.input, ctx);
+      const size = (v: Amount) => (typeof v === 'number' ? v : exprIn(v, [], ctx).e);
       const plan = P.sample(input.plan, n.count !== undefined ? { count: size(n.count) } : { fraction: size(n.fraction!) }, { replace: n.replace, seed: n.seed });
       return { plan: at(plan, 'sample'), fields: input.fields };
     }
     case 'explode': {
-      const input = compile(n.input, cat, params);
+      const input = compile(n.input, ctx);
       const i = fieldIndex(input.fields, n.column, 'explode');
       const type = input.fields[i]!.type;
       const element = /^list<(.*)>$/.exec(type)?.[1];
@@ -484,18 +572,44 @@ function compile(n: RelNode, cat: Resolver, params: string[]): { plan: P.PlanOp;
       return { plan: at(plan, 'explode'), fields };
     }
     case 'pivot': {
-      const input = compile(n.input, cat, params);
+      const input = compile(n.input, ctx);
       const scopes = [input.fields];
-      const keys = n.keys.map(([name, node]) => ({ name, ...expr(node, scopes, params, cat) }));
-      const on = expr(n.on, scopes, params, cat);
-      const aggs = n.aggs.map(([name, node]) => ({ name, ...aggCall('pivot', name, node, scopes, params, cat) }));
+      const keys = n.keys.map(([name, node]) => ({ name, ...exprIn(node, scopes, ctx) }));
+      const on = exprIn(n.on, scopes, ctx);
+      const aggs = n.aggs.map(([name, node]) => ({ name, ...aggCall('pivot', name, node, scopes, ctx) }));
       const fields: Field[] = keys.map((k) => ({ name: k.name, type: k.type, collation: k.collation }));
       for (const v of n.values) for (const a of aggs) fields.push({ name: aggs.length === 1 ? String(v) : `${String(v)}_${a.name}`, type: a.type, collation: 'binary' });
       const plan = P.pivot(input.plan, keys.map((k) => k.e), on.e, n.values, aggs.map((a) => a.call), { collations: keys.map((k) => k.collation), collation: on.collation, ...(n.ordered ? { ordered: 'first' as const } : {}) });
       return { plan: at(plan, 'pivot'), fields };
     }
+    case 'window': {
+      const input = compile(n.input, ctx);
+      const scopes = [input.fields];
+      const partition = n.partition.map((name) => exprIn({ k: 'col', name }, scopes, ctx));
+      const order = n.order.map((k) => sortKey(k, scopes, ctx));
+      const calls = n.calls.map(([name, node]) => ({ name, ...windowCall(name, node, scopes, ctx) }));
+      const bound = (b: FrameBound): P.FrameBound => (b.offset === undefined ? { kind: b.kind } : { kind: b.kind, offset: P.lit(b.offset) });
+      const frame = n.frame ? P.frame(n.frame.unit, bound(n.frame.start), bound(n.frame.end), n.frame.exclude) : undefined;
+      const plan = P.window(input.plan, calls.map((c) => c.call), { partition: partition.map((p) => p.e), collations: partition.map((p) => p.collation), order, ...(frame ? { frame } : {}) });
+      return { plan: at(plan, 'window'), fields: [...input.fields, ...calls.map((c) => ({ name: c.name, type: c.type, collation: 'binary' as Collation }))] };
+    }
+    case 'iterate': {
+      const init = compile(n.init, ctx);
+      const id = ctx.ids.n++;
+      const working = new Map(ctx.working).set(n.name, { id, fields: init.fields });
+      const step = compile(n.step, { ...ctx, working });
+      const names = (fs: readonly Field[]) => fs.map((f) => f.name.toLowerCase()).join(',');
+      if (names(init.fields) !== names(step.fields)) throw new Error(`iterate: the step's columns (${names(step.fields)}) are not the initial rows' (${names(init.fields)})`);
+      const plan = P.iterate(id, n.name, init.plan, [step.plan], n.distinct ? { distinct: true, collations: init.fields.map((f) => f.collation) } : {});
+      return { plan: at(plan, 'iterate'), fields: init.fields };
+    }
+    case 'working': {
+      const w = ctx.working.get(n.name);
+      if (!w) throw new Error(`iterate: ${n.name}'s previous rows are read outside its step`);
+      return { plan: at(P.working(w.id, w.fields.map((f) => f.type)), 'iterate'), fields: [...w.fields] };
+    }
     case 'unpivot': {
-      const input = compile(n.input, cat, params);
+      const input = compile(n.input, ctx);
       const columns = n.columns.map((name) => fieldIndex(input.fields, name, 'unpivot'));
       const keep = n.keep ? n.keep.map((name) => fieldIndex(input.fields, name, 'unpivot')) : input.fields.map((_, i) => i).filter((i) => !columns.includes(i));
       const types = new Set(columns.map((i) => input.fields[i]!.type));
@@ -514,15 +628,33 @@ function fieldIndex(fields: readonly Field[], name: string, call: string): numbe
   return i;
 }
 
+function sortKey(k: { readonly expr: ExprNode; readonly desc: boolean }, scopes: readonly (readonly Field[])[], ctx: Ctx): P.SortKey {
+  const c = exprIn(k.expr, scopes, ctx);
+  return k.desc ? P.desc(c.e, { collation: c.collation }) : P.asc(c.e, { collation: c.collation });
+}
+
+/** A call of `window`: a window function, or an aggregate over the frame. */
+function windowCall(name: string, node: ExprNode, scopes: readonly (readonly Field[])[], ctx: Ctx): { type: P.PlanType; call: P.WindowCall } {
+  if (node.k !== 'agg') throw new Error(`window: ${name} is not a window function or aggregate`);
+  const def = AGGREGATE[node.name as keyof typeof AGGREGATE];
+  if (!def) throw new Error(`window: no window function or aggregate named ${node.name}`);
+  if (node.distinct) throw new Error(`window: agg.${node.name} can't be distinct in a window`);
+  const args = node.args.map((a) => exprIn(a, scopes, ctx));
+  const type = (ctx.cat.resultType?.(node.name, args.map((a) => a.type)) ?? def.result) as P.PlanType;
+  const filter = node.filter ? exprIn(node.filter, scopes, ctx).e : undefined;
+  return { type, call: P.windowCall(node.name, args.map((a) => a.e), type, { star: node.name === 'count' && args.length === 0, ...(filter ? { filter } : {}), ...(node.ignoreNulls ? { ignoreNulls: true } : {}) }) };
+}
+
 /** An aggregate call of `aggregate` or `pivot`. */
-function aggCall(call: string, name: string, node: ExprNode, scopes: readonly (readonly Field[])[], params: string[], cat: Resolver): { type: P.PlanType; call: P.AggCall } {
+function aggCall(call: string, name: string, node: ExprNode, scopes: readonly (readonly Field[])[], ctx: Ctx): { type: P.PlanType; call: P.AggCall } {
+  const cat = ctx.cat;
   if (node.k !== 'agg') throw new Error(`${call}: ${name} is not an aggregate`);
   const def = AGGREGATE[node.name as keyof typeof AGGREGATE];
   if (!def) throw new Error(`${call}: no aggregate named ${node.name}`);
   if (def.kind !== 'aggregate') throw new Error(`${call}: agg.${node.name} is a window function; use it in window()`);
-  const args = node.args.map((a) => expr(a, scopes, params, cat));
+  const args = node.args.map((a) => exprIn(a, scopes, ctx));
   const type = (cat.resultType?.(node.name, args.map((a) => a.type)) ?? def.result) as P.PlanType;
-  const filter = node.filter ? expr(node.filter, scopes, params, cat).e : undefined;
+  const filter = node.filter ? exprIn(node.filter, scopes, ctx).e : undefined;
   return { type, call: P.agg(node.name, args.map((a) => a.e), type, { star: node.name === 'count' && args.length === 0, distinct: !!node.distinct, ...(filter ? { filter } : {}) }) };
 }
 
@@ -547,45 +679,75 @@ function dateLiteral(iso: string, type?: P.PlanType): P.PlanExpr {
 const COMPARES = new Set(['cmp_eq', 'cmp_ne', 'cmp_lt', 'cmp_le', 'cmp_gt', 'cmp_ge', 'cmp_is', 'cmp_is_not', 'in_list', 'like', 'glob']);
 
 /** Compile an expression whose column names resolve against `scopes` (one per input of the owning operation). */
-export function expr(n: ExprNode, scopes: readonly (readonly Field[])[], params: string[], cat: Pick<Resolver, 'resultType'> = {}): { e: P.PlanExpr; type: P.PlanType; collation: Collation } {
+export function expr(n: ExprNode, scopes: readonly (readonly Field[])[], params: string[], cat: Pick<Resolver, 'resultType'> = {}): Typed {
+  return exprIn(n, scopes, context({ table: () => undefined, ...cat }, params));
+}
+
+type Typed = { e: P.PlanExpr; type: P.PlanType; collation: Collation };
+
+function exprIn(n: ExprNode, scopes: readonly (readonly Field[])[], ctx: Ctx): Typed {
+  const cat = ctx.cat;
   switch (n.k) {
     case 'col': {
-      for (let input = 0; input < scopes.length; input++) {
-        const index = scopes[input]!.findIndex((f) => f.name.toLowerCase() === n.name.toLowerCase());
+      // A correlated reference reads the scopes of the operation `outer` subqueries out, at that depth.
+      const depth = n.outer ?? 0;
+      const at = depth ? ctx.outer[depth - 1] : scopes;
+      if (!at) throw new Error(`no enclosing relation ${depth} subqueries out for column ${n.name}`);
+      for (let input = 0; input < at.length; input++) {
+        const index = at[input]!.findIndex((f) => f.name.toLowerCase() === n.name.toLowerCase());
         if (index >= 0) {
-          const f = scopes[input]![index]!;
-          return { e: P.col(input, index, f.type, f.collation), type: f.type, collation: f.collation };
+          const f = at[input]![index]!;
+          return { e: P.col(input, index, f.type, f.collation, depth), type: f.type, collation: f.collation };
         }
       }
-      throw new Error(`no column named ${n.name} (columns: ${scopes.flat().map((f) => f.name).join(', ')})`);
+      throw new Error(`no column named ${n.name} (columns: ${at.flat().map((f) => f.name).join(', ')})`);
+    }
+    case 'case': {
+      const whens = n.whens.map((w) => ({ when: exprIn(w.when, scopes, ctx), then: exprIn(w.then, scopes, ctx) }));
+      const otherwise = n.else ? exprIn(n.else, scopes, ctx) : undefined;
+      const type = [...whens.map((w) => w.then.type), otherwise?.type].find((t) => t && t !== 'null') ?? 'null';
+      const e = P.caseWhen(whens.map((w) => ({ when: w.when.e, then: w.then.e })), type, otherwise?.e);
+      return { e: { ...e, ...origin('caseWhen') }, type, collation: whens.find((w) => w.then.collation !== 'binary')?.then.collation ?? 'binary' };
+    }
+    case 'exists':
+    case 'scalar':
+    case 'inRel': {
+      const sub = compile(n.rel, { ...ctx, outer: [scopes, ...ctx.outer] });
+      if (n.k === 'exists') return { e: { ...P.exists(sub.plan), ...origin('exists') }, type: 'int', collation: 'binary' };
+      if (sub.fields.length !== 1) throw new Error(`${n.k === 'scalar' ? 'scalar' : 'in'}: the subquery has ${sub.fields.length} columns, not one`);
+      const f = sub.fields[0]!;
+      if (n.k === 'scalar') return { e: { ...P.scalar(sub.plan, f.type, f.collation), ...origin('scalar') }, type: f.type, collation: f.collation };
+      const probe = exprIn(n.probe, scopes, ctx);
+      const collation = probe.collation !== 'binary' ? probe.collation : f.collation;
+      return { e: { ...P.inPlan(probe.e, sub.plan, collation), ...origin('in') }, type: 'int', collation: 'binary' };
     }
     case 'lit': {
       const e = literal(n.value, undefined, n.date);
       return { e, type: (e as { type: P.PlanType }).type, collation: 'binary' };
     }
     case 'param': {
-      let i = params.indexOf(n.name);
-      if (i < 0) i = params.push(n.name) - 1;
+      let i = ctx.params.indexOf(n.name);
+      if (i < 0) i = ctx.params.push(n.name) - 1;
       return { e: P.param(i, n.type), type: n.type, collation: 'binary' };
     }
     case 'agg':
       throw new Error(`agg.${n.name} is only allowed in aggregate()`);
     case 'and':
     case 'or': {
-      const args = n.args.map((a) => expr(a, scopes, params, cat).e);
+      const args = n.args.map((a) => exprIn(a, scopes, ctx).e);
       return { e: { ...(n.k === 'and' ? P.and(...args) : P.or(...args)), ...origin(n.k) }, type: 'bool', collation: 'binary' };
     }
     case 'not':
-      return { e: { ...P.not(expr(n.arg, scopes, params, cat).e), ...origin('not') }, type: 'bool', collation: 'binary' };
+      return { e: { ...P.not(exprIn(n.arg, scopes, ctx).e), ...origin('not') }, type: 'bool', collation: 'binary' };
     case 'isNull': {
-      const arg = expr(n.arg, scopes, params, cat).e;
+      const arg = exprIn(n.arg, scopes, ctx).e;
       return { e: { ...(n.not ? P.isNotNull(arg) : P.isNull(arg)), ...origin(n.not ? 'isNotNull' : 'isNull') }, type: 'bool', collation: 'binary' };
     }
     case 'fn': {
       if (!(n.name in SCALAR)) throw new Error(`fn.${n.name}: the engine has no such function`);
       // A Date literal takes the temporal type of what it is compared or combined with (a date counts days).
       const isDate = (a: ExprNode) => a.k === 'lit' && a.date === true;
-      const others = n.args.map((a) => (isDate(a) ? null : expr(a, scopes, params, cat)));
+      const others = n.args.map((a) => (isDate(a) ? null : exprIn(a, scopes, ctx)));
       const temporal = others.find((a) => a && (a.type === 'date' || a.type === 'datetime'))?.type;
       const args = n.args.map((a, i) => others[i] ?? { e: literal((a as { value: string }).value, temporal, true), type: temporal ?? 'datetime', collation: 'binary' as Collation });
       const textArg = args.find((a) => a.collation !== 'binary');

@@ -6,7 +6,7 @@
 import { beforeAll, describe as group, expect, test } from 'vitest';
 import { Database } from 'smaltdb/engine';
 import * as P from 'smaltdb/plan';
-import { type Rel, agg, attach, fn, fromColumns, int, list, param, real, scan, table, text, values } from '../src/index.js';
+import { type Rel, agg, attach, caseWhen, exists, fn, fromColumns, int, iterate, list, param, real, scalar, scan, table, text, values } from '../src/index.js';
 import type { SmaltDb } from '../src/index.js';
 
 const t = table('t', { id: int().primaryKey(), g: text(), x: int(), y: real() });
@@ -202,5 +202,99 @@ group('sources', () => {
   test('values are unchanged', async () => {
     const rel = values<{ n: number }>([{ name: 'n', type: 'INTEGER' }], [{ n: 1 }]).extend((r) => ({ m: fn.add(r.n, 1) }));
     expect(await db.rows(rel)).toEqual([{ n: 1, m: 2 }]);
+  });
+});
+
+group('windows', () => {
+  test('a window function over partitions, ordered', async () => {
+    const rel = scan(t).window((r) => ({ rn: agg.row_number() }), { partition: ['g'], order: ['-id'] });
+    const raw = P.window(tScan, [P.windowCall('row_number', [], 'int')], { partition: [T.g], collations: ['binary'], order: [P.desc(T.id)] });
+    const rows = await same(rel, raw);
+    expect(rows.map((r) => [r.id, r.rn])).toEqual([[1, 2], [2, 1], [3, 2], [4, 1], [5, 1]]);
+  });
+
+  test('an aggregate over a frame of rows', async () => {
+    const rel = scan(t).window((r) => ({ s: agg.sum(r.x) }), { order: ['id'], frame: { unit: 'ROWS', start: { kind: 'preceding', offset: 1 }, end: { kind: 'currentRow' } } });
+    const raw = P.window(tScan, [P.windowCall('sum', [T.x], 'int')], { partition: [], collations: [], order: [P.asc(T.id)], frame: P.frame('ROWS', P.preceding(1), P.currentRow) });
+    expect((await same(rel, raw)).map((r) => r.s)).toEqual([10, 30, 50, 30, 50]);
+  });
+
+  test('lag ignoring NULLs', async () => {
+    const rel = scan(t).window((r) => ({ prev: agg.lag(r.x, { ignoreNulls: true }) }), { order: ['id'] });
+    const c = await db.compile(rel);
+    const type = c.fields.at(-1)!.type;
+    const raw = P.window(tScan, [P.windowCall('lag', [T.x], type, { ignoreNulls: true })], { partition: [], collations: [], order: [P.asc(T.id)] });
+    expect((await same(rel, raw)).map((r) => r.prev)).toEqual([null, 10, 20, 30, 30]);
+  });
+
+  test('a window function in aggregate(), or a distinct aggregate in window(), is refused', async () => {
+    await expect(db.compile(scan(t).aggregate(() => ({}), () => ({ n: agg.row_number() })))).rejects.toThrow(/^aggregate: agg.row_number is a window function; use it in window\(\)/);
+    await expect(db.compile(scan(t).window((r) => ({ n: agg.count(r.x, { distinct: true }) })))).rejects.toThrow(/^window: agg.count can't be distinct/);
+  });
+});
+
+group('subqueries', () => {
+  const U = { id: P.col(0, 0, 'int'), tid: P.col(0, 1, 'int') };
+  const outerId = (depth: number) => P.col(0, 0, 'int', 'binary', depth);
+
+  test('exists, correlated: the outer id, though the inner table has an id too', async () => {
+    const rel = scan(t).filter((r) => exists(scan(u).filter((x) => x.tid.eq(r.id))));
+    const raw = P.filter(tScan, P.exists(P.filter(uScan, eq(U.tid, outerId(1)))));
+    expect((await same(rel, raw)).map((r) => r.id)).toEqual([1, 3]);
+    const json = JSON.stringify(rel);
+    expect(json).toContain('{"k":"col","name":"id","outer":1}');
+    expect(json).not.toContain('scope');
+  });
+
+  test('a scalar subquery', async () => {
+    const rel = scan(t).select((r) => ({ id: r.id, n: scalar(scan(u).filter((x) => x.tid.eq(r.id)).aggregate(() => ({}), () => ({ n: agg.count() }))) }));
+    const raw = P.project(tScan, [T.id, P.scalar(P.aggregate(P.filter(uScan, eq(U.tid, outerId(1))), [], [P.agg('count', [], 'int', { star: true })]), 'int')]);
+    expect((await same(rel, raw)).map((r) => r.n)).toEqual([2, 0, 1, 0, 0]);
+  });
+
+  test('in a relation', async () => {
+    const rel = scan(t).filter((r) => r.id.in(scan(u).pick('tid')));
+    const raw = P.filter(tScan, P.inPlan(T.id, P.project(uScan, [U.tid])));
+    expect((await same(rel, raw)).map((r) => r.id)).toEqual([1, 3]);
+  });
+
+  test('two subqueries deep, each reference at its depth', async () => {
+    const rel = scan(t).filter((r) => exists(scan(u).filter((x) => x.tid.eq(r.id).and(exists(scan(t).filter((y) => y.id.eq(x.tid).and(y.g.eq(r.g))))))));
+    const inner = P.filter(tScan, P.and(eq(T.id, P.col(0, 1, 'int', 'binary', 1)), eq(T.g, P.col(0, 1, 'text', 'binary', 2))));
+    const raw = P.filter(tScan, P.exists(P.filter(uScan, P.and(eq(U.tid, outerId(1)), P.exists(inner)))));
+    expect((await same(rel, raw)).map((r) => r.id)).toEqual([1, 3]);
+  });
+
+  test('a scalar subquery of two columns is refused', async () => {
+    await expect(db.compile(scan(t).select(() => ({ n: scalar(scan(u).pick('id', 'tid') as never) })))).rejects.toThrow(/^scalar: the subquery has 2 columns, not one/);
+  });
+});
+
+group('iterate and CASE', () => {
+  test('iterate: the initial rows, then each step over the previous one', async () => {
+    const start = values<{ n: number }>([{ name: 'n', type: 'INTEGER' }], [{ n: 1 }]);
+    const rel = iterate(start, (prev) => prev.filter((r) => r.n.lt(5)).select((r) => ({ n: fn.add(r.n, 1) })));
+    const c = await db.compile(rel);
+    const addType = c.fields[0]!.type;
+    const step = P.project(P.filter(P.working(0, ['int']), P.call('cmp_lt', [P.col(0, 0, 'int'), P.lit(5)], 'bool', 'binary')), [P.call('add', [P.col(0, 0, 'int'), P.lit(1)], addType)]);
+    const raw = P.iterate(0, 'iterate', P.values([[P.lit(1)]], ['int']), [step]);
+    expect((await same(rel, raw)).map((r) => r.n)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  test('iterate distinct ends a cycle', async () => {
+    const start = values<{ n: number }>([{ name: 'n', type: 'INTEGER' }], [{ n: 1 }]);
+    const rel = iterate(start, (prev) => prev.select((r) => ({ n: fn.sub(3, r.n) })), { distinct: true });
+    expect((await db.rows(rel)).map((r) => r.n)).toEqual([1, 2]);
+  });
+
+  test("iterate refuses a step whose columns aren't the initial rows'", async () => {
+    const start = values<{ n: number }>([{ name: 'n', type: 'INTEGER' }], [{ n: 1 }]);
+    await expect(db.compile(iterate(start, (prev) => prev.select((r) => ({ m: r.n })) as never))).rejects.toThrow(/^iterate: the step's columns \(m\)/);
+  });
+
+  test('caseWhen: the first true condition gives the value', async () => {
+    const rel = scan(t).select((r) => ({ id: r.id, size: caseWhen([[r.x.gt(25), 'big'], [r.x.isNull(), 'none']], 'small') }));
+    const raw = P.project(tScan, [T.id, P.caseWhen([{ when: P.call('cmp_gt', [T.x, P.lit(25)], 'bool', 'binary'), then: P.lit('big') }, { when: P.isNull(T.x), then: P.lit('none') }], 'text', P.lit('small'))]);
+    expect((await same(rel, raw)).map((r) => r.size)).toEqual(['small', 'small', 'big', 'none', 'big']);
   });
 });
