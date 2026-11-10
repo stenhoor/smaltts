@@ -101,6 +101,8 @@ Size: M. Status: done, 2026-11-10: the relation operations (stenhoor/smaltts#10)
 ## 6. Views: reflecting and interface
 
 Size: M in smaltts; **smaltdb E10 is L** (stenhoor/smaltdb#188).
+Status: part 1 in progress: interface views with a column list, and view sources that follow renames precisely (in
+review); the change-set entries for affected views next.
 
 - **Without E10:** reflecting views by default, interface views with a column list (names and order), reading views
   of other languages, the change-set warnings and errors for affected views, and the recreate step for reflecting

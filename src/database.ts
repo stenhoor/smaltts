@@ -72,9 +72,24 @@ export class SmaltDb {
     return { changes, applied: await this.apply(changes, policy) };
   }
 
-  /** A view: `rel` is stored as smaltts source and bound by name each time the view is read. */
-  async createView(name: string, rel: Rel<any>, options: { materialized?: boolean; storage?: 'row' | 'columnar'; populate?: boolean; replace?: boolean } = {}): Promise<void> {
-    const source: ViewSource = { kind: 'view', rel: rel.node };
+  /**
+   * A view: `rel` is stored as smaltts source and bound by name each time the view is read. Without `columns` the view
+   * reflects the tables it reads (its columns follow them); `columns` declares it an interface: these of its relation's
+   * columns, in this order (`true`: all of them as they are now), whatever is renamed or added underneath.
+   */
+  async createView(
+    name: string,
+    rel: Rel<any>,
+    options: { columns?: readonly string[] | true; materialized?: boolean; storage?: 'row' | 'columnar'; populate?: boolean; replace?: boolean } = {},
+  ): Promise<void> {
+    let source: ViewSource = { kind: 'view', rel: rel.node };
+    if (options.columns) {
+      const fields = (await this.compile(rel)).fields;
+      const columns = options.columns === true ? fields.map((f) => f.name) : options.columns;
+      for (const c of columns) if (!fields.some((f) => f.name.toLowerCase() === c.toLowerCase())) throw new Error(`createView ${name}: no column named ${c} (columns: ${fields.map((f) => f.name).join(', ')})`);
+      if (new Set(columns.map((c) => c.toLowerCase())).size !== columns.length) throw new Error(`createView ${name}: a column is listed twice`);
+      source = { kind: 'view', rel: { r: 'select', input: rel.node, fields: columns.map((c) => [c, { k: 'col', name: c }] as const) }, columns };
+    }
     const materialized = options.materialized ?? false;
     await this.backend.transaction(async (tx) => {
       if (options.replace) await tx.run({ kind: 'schema', op: { op: 'drop', objectType: materialized ? 'materialized view' : 'view', name, ifExists: true } });
@@ -85,12 +100,18 @@ export class SmaltDb {
           name,
           temp: false,
           ifNotExists: false,
+          ...(source.columns ? { columns: source.columns } : {}),
           materialized,
           ...(materialized ? { options: { storage: options.storage ?? 'row' }, withData: options.populate ?? true } : {}),
           source: { language: LANGUAGE, text: JSON.stringify(source) },
         },
       });
     });
+    this.cached = undefined;
+  }
+  /** Drop a view (a materialized view with `materialized`). */
+  async dropView(name: string, options: { materialized?: boolean; ifExists?: boolean } = {}): Promise<void> {
+    await this.backend.run({ kind: 'schema', op: { op: 'drop', objectType: options.materialized ? 'materialized view' : 'view', name, ifExists: options.ifExists ?? false } });
     this.cached = undefined;
   }
   /** Fill a materialized view again from its relation. */

@@ -23,6 +23,7 @@ group('every spec field', () => {
     ['add a NOT NULL column without a default', base({ c: int().notNull() }), ['rebuildTable rewrite possible']],
     ['drop a column', table('t', { id: int().primaryKey(), a: int() }, { indexes: [{ name: 't_a', columns: [{ column: 'a' }] }] }), ['dropColumn rewrite certain']],
     ['rename a column', table('t', { id: int().primaryKey(), a: int(), bee: text().notNull().renamedFrom('b') }, { indexes: [{ name: 't_a', columns: [{ column: 'a' }] }] }), ['renameColumn metadata none']],
+    ['rename a primary key column', table('t', { key: int().primaryKey().renamedFrom('id'), a: int(), b: text().notNull() }, { indexes: [{ name: 't_a', columns: [{ column: 'a' }] }] }), ['renameColumn metadata none']],
     ['rename the table', table('t2', { id: int().primaryKey(), a: int(), b: text().notNull() }, { renamedFrom: 't', indexes: [{ name: 't_a', columns: [{ column: 'a' }] }] }), ['renameTable metadata none']],
     ['a lossless type change', table('t', { id: int().primaryKey(), a: numeric(), b: text().notNull() }, { indexes: [{ name: 't_a', columns: [{ column: 'a' }] }] }), ['rebuildTable rewrite none']],
     ['a lossy type change', table('t', { id: int().primaryKey(), a: real(), b: text().notNull() }, { indexes: [{ name: 't_a', columns: [{ column: 'a' }] }] }), ['rebuildTable rewrite possible']],

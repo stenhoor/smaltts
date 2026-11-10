@@ -19,6 +19,21 @@ export interface CatalogViewInfo {
   /** The language the view is written in, and its source text. */
   readonly language: string | undefined;
   readonly definition: string;
+  /** An interface view's declared columns, in order (DESIGN.md section 8.1); absent for a reflecting view. */
+  readonly columns?: readonly string[];
+  /** A materialized view's storage. */
+  readonly storage?: 'row' | 'columnar';
+}
+
+/** A view's declared columns: the engine's column list, or a smaltts source's. */
+function declared(language: string | undefined, text: string, columns?: readonly string[]): readonly string[] | undefined {
+  if (columns?.length) return columns;
+  if (language !== LANGUAGE) return undefined;
+  try {
+    return (JSON.parse(text) as ViewSource).columns;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface Catalog {
@@ -103,10 +118,15 @@ export async function readCatalog(db: Backend): Promise<Catalog> {
     if (t.kind === 'table') tables.push(spec);
     else if (t.kind === 'materializedView') {
       stored.push(spec);
-      views.push({ name: t.name, materialized: true, language: t.source?.language, definition: t.source?.text ?? '' });
+      const columns = declared(t.source?.language, t.source?.text ?? '');
+      views.push({ name: t.name, materialized: true, language: t.source?.language, definition: t.source?.text ?? '', ...(columns ? { columns } : {}), storage: t.storage === 'columnar' ? 'columnar' : 'row' });
     }
   }
-  for (const v of data.views) if (v.schema === 'main') views.push({ name: v.name, materialized: false, language: v.language, definition: v.text });
+  for (const v of data.views) {
+    if (v.schema !== 'main') continue;
+    const columns = declared(v.language, v.text, v.columns);
+    views.push({ name: v.name, materialized: false, language: v.language, definition: v.text, ...(columns ? { columns } : {}) });
+  }
   const find = (n: string) => tables.find((s) => same(s.name, n)) ?? stored.find((s) => same(s.name, n));
   return {
     tables,
