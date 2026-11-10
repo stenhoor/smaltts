@@ -7,6 +7,7 @@
  * and specs written in code are the same objects; only the second carries a row type.
  */
 import type * as plan from 'smaltdb/plan';
+import { type Cols, type ExprNode, type Truth, Expr } from './expr.js';
 
 /** How the engine stores a column's values (smaltdb tables are strict). */
 export type StorageType = 'INTEGER' | 'REAL' | 'TEXT' | 'BLOB' | 'NUMERIC' | 'ANY' | 'BOOLEAN' | 'DATE' | 'DATETIME' | 'TIME' | 'DURATION' | 'LIST' | 'STRUCT';
@@ -22,6 +23,8 @@ export interface ColumnSpec {
   readonly collation?: Collation;
   /** A constant default. */
   readonly default?: Value;
+  /** A computed default: an expression over no columns (`fn.random()`), evaluated for each row written. */
+  readonly defaultExpr?: ExprNode;
   /** The column's previous name: the differ renames it instead of dropping one column and adding another. */
   readonly renamedFrom?: string;
 }
@@ -38,11 +41,18 @@ export interface IndexSpec {
 }
 
 export interface ForeignKeySpec {
+  readonly name?: string;
   readonly columns: readonly string[];
   readonly table: string;
   readonly refColumns?: readonly string[];
   readonly onDelete?: plan.FkAction;
   readonly onUpdate?: plan.FkAction;
+}
+
+/** A CHECK constraint: a predicate over the row, by column name. */
+export interface CheckSpec {
+  readonly name?: string;
+  readonly expr: ExprNode;
 }
 
 /** A table's desired state. `Row` is its row type when it is known at compile time. */
@@ -54,6 +64,7 @@ export interface TableSpec<Row = Record<string, Value>> {
   readonly unique?: readonly KeySpec[];
   readonly indexes?: readonly IndexSpec[];
   readonly foreignKeys?: readonly ForeignKeySpec[];
+  readonly checks?: readonly CheckSpec[];
   readonly storage?: 'row' | 'columnar';
   /** The table's previous name: the differ renames it instead of dropping one table and creating another. */
   readonly renamedFrom?: string;
@@ -69,6 +80,37 @@ export interface SchemaSpec {
 // ---------------------------------------------------------------------------------------------------------------
 // Typed column builders: `table('t', { id: int().primaryKey(), name: text().notNull() })`.
 
+/** What a column builder carries beyond its spec: keys, an index, CHECKs and a foreign key, placed by `table()`. */
+interface BuilderFlags {
+  readonly primaryKey?: boolean;
+  readonly unique?: boolean;
+  readonly index?: boolean;
+  readonly checks?: readonly CheckSpec[];
+  readonly references?: { readonly table: string; readonly column?: string; readonly onDelete?: plan.FkAction; readonly onUpdate?: plan.FkAction; readonly name?: string };
+}
+
+/** The name a column CHECK uses for its own column until `table()` knows it. */
+const SELF = '$column';
+
+/** An expression with column `from` renamed to `to`. */
+function renameCol(n: ExprNode, from: string, to: string): ExprNode {
+  switch (n.k) {
+    case 'col':
+      return n.name === from ? { ...n, name: to } : n;
+    case 'fn':
+    case 'and':
+    case 'or':
+      return { ...n, args: n.args.map((a) => renameCol(a, from, to)) };
+    case 'agg':
+      return { ...n, args: n.args.map((a) => renameCol(a, from, to)) };
+    case 'not':
+    case 'isNull':
+      return { ...n, arg: renameCol(n.arg, from, to) };
+    default:
+      return n;
+  }
+}
+
 /** A column under construction; `T` is its TypeScript value type, `N` whether it may be NULL. */
 export class ColumnBuilder<T, N extends boolean = true, D extends boolean = false> {
   /** Phantom fields carrying the column's types. */
@@ -76,8 +118,8 @@ export class ColumnBuilder<T, N extends boolean = true, D extends boolean = fals
   declare readonly $nullable: N;
   declare readonly $hasDefault: D;
   readonly spec: Omit<ColumnSpec, 'name'>;
-  readonly flags: { readonly primaryKey?: boolean; readonly unique?: boolean; readonly index?: boolean };
-  constructor(spec: Omit<ColumnSpec, 'name'>, flags: { readonly primaryKey?: boolean; readonly unique?: boolean; readonly index?: boolean } = {}) {
+  readonly flags: BuilderFlags;
+  constructor(spec: Omit<ColumnSpec, 'name'>, flags: BuilderFlags = {}) {
     this.spec = spec;
     this.flags = flags;
   }
@@ -103,6 +145,20 @@ export class ColumnBuilder<T, N extends boolean = true, D extends boolean = fals
   }
   renamedFrom(previous: string): ColumnBuilder<T, N, D> {
     return new ColumnBuilder({ ...this.spec, renamedFrom: previous }, this.flags);
+  }
+  /** A computed default: an expression over no columns, evaluated for each row written (`fn.random()`). */
+  defaultExpr(expr: Expr<T | null>): ColumnBuilder<T, N, true> {
+    const { default: _constant, ...rest } = this.spec;
+    return new ColumnBuilder({ ...rest, defaultExpr: expr.node }, this.flags);
+  }
+  /** A CHECK on this column: `pred` receives the column (`int().check((n) => n.gte(0))`). */
+  check(pred: (column: Expr<T>) => Expr<Truth>, name?: string): ColumnBuilder<T, N, D> {
+    const check: CheckSpec = { ...(name ? { name } : {}), expr: pred(new Expr({ k: 'col', name: SELF })).node };
+    return new ColumnBuilder(this.spec, { ...this.flags, checks: [...(this.flags.checks ?? []), check] });
+  }
+  /** A foreign key from this column to `column` of `table` (absent: its primary key). */
+  references(table: TableSpec<any> | string, column?: string, actions: { onDelete?: plan.FkAction; onUpdate?: plan.FkAction; name?: string } = {}): ColumnBuilder<T, N, D> {
+    return new ColumnBuilder(this.spec, { ...this.flags, references: { table: typeof table === 'string' ? table : table.name, ...(column ? { column } : {}), ...actions } });
   }
 }
 
@@ -148,7 +204,9 @@ export type RowOf<C extends Columns> = { [K in keyof C]: ValueOf<C[K]> };
 type OptionalKeys<C extends Columns> = { [K in keyof C]: C[K] extends ColumnBuilder<any, infer N, infer D> ? (N extends true ? K : D extends true ? K : never) : never }[keyof C];
 export type InsertOf<C extends Columns> = { [K in Exclude<keyof C, OptionalKeys<C>>]: ValueOf<C[K]> } & { [K in OptionalKeys<C>]?: ValueOf<C[K]> };
 
-export interface TableOptions {
+export interface TableOptions<Row = Record<string, unknown>> {
+  /** CHECKs over the row: a list, or named (`{ positive: r.total.gte(0) }`). */
+  readonly checks?: (row: Cols<Row>) => readonly Expr<Truth>[] | Readonly<Record<string, Expr<Truth>>>;
   readonly renamedFrom?: string;
   readonly storage?: 'row' | 'columnar';
   readonly primaryKey?: readonly string[];
@@ -158,13 +216,25 @@ export interface TableOptions {
 }
 
 /** A table declared in code: a spec whose row type is inferred from its columns. */
-export function table<const C extends Columns>(name: string, columns: C, options: TableOptions = {}): TableSpec<RowOf<C>> & { readonly $insert?: InsertOf<C> } {
+export function table<const C extends Columns>(name: string, columns: C, options: TableOptions<RowOf<C>> = {}): TableSpec<RowOf<C>> & { readonly $insert?: InsertOf<C> } {
   const entries = Object.entries(columns);
   const pk = entries.filter(([, c]) => c.flags.primaryKey).map(([n]) => n);
   if (pk.length > 1) throw new Error(`table ${name}: more than one column is marked primaryKey(); give options.primaryKey instead`);
   const primaryKey = options.primaryKey ?? (pk.length ? pk : undefined);
   const unique = [...entries.filter(([, c]) => c.flags.unique).map(([n]) => [n]), ...(options.unique ?? [])];
   const indexes = [...entries.filter(([, c]) => c.flags.index).map(([n]) => ({ name: `${name}_${n}`, columns: [{ column: n }] })), ...(options.indexes ?? [])];
+  const columnChecks = entries.flatMap(([n, c]) => (c.flags.checks ?? []).map((k) => ({ ...k, expr: renameCol(k.expr, SELF, n) })));
+  const given = options.checks?.(new Proxy({}, { get: (_, p) => (typeof p === 'string' ? new Expr({ k: 'col', name: p }) : undefined) }) as Cols<RowOf<C>>);
+  const tableChecks: CheckSpec[] = !given ? [] : Array.isArray(given) ? given.map((e) => ({ expr: e.node })) : Object.entries(given as Record<string, Expr<Truth>>).map(([n, e]) => ({ name: n, expr: e.node }));
+  const checks = [...columnChecks, ...tableChecks];
+  const foreignKeys: ForeignKeySpec[] = [
+    ...entries.flatMap(([n, c]): ForeignKeySpec[] => {
+      const r = c.flags.references;
+      if (!r) return [];
+      return [{ ...(r.name ? { name: r.name } : {}), columns: [n], table: r.table, ...(r.column ? { refColumns: [r.column] } : {}), ...(r.onDelete ? { onDelete: r.onDelete } : {}), ...(r.onUpdate ? { onUpdate: r.onUpdate } : {}) }];
+    }),
+    ...(options.foreignKeys ?? []),
+  ];
   return tableSpec({
     kind: 'table',
     name,
@@ -172,7 +242,8 @@ export function table<const C extends Columns>(name: string, columns: C, options
     ...(primaryKey ? { primaryKey: { columns: primaryKey } } : {}),
     ...(unique.length ? { unique: unique.map((columns) => ({ columns })) } : {}),
     ...(indexes.length ? { indexes } : {}),
-    ...(options.foreignKeys?.length ? { foreignKeys: options.foreignKeys } : {}),
+    ...(foreignKeys.length ? { foreignKeys } : {}),
+    ...(checks.length ? { checks } : {}),
     ...(options.storage && options.storage !== 'row' ? { storage: options.storage } : {}),
     ...(options.renamedFrom ? { renamedFrom: options.renamedFrom } : {}),
   });
@@ -277,60 +348,4 @@ export function columnIndex(spec: TableSpec<any>, name: string): number {
   const i = spec.columns.findIndex((c) => c.name.toLowerCase() === name.toLowerCase());
   if (i < 0) throw new Error(`table ${spec.name} has no column ${name}`);
   return i;
-}
-
-function columnDef(c: ColumnSpec): plan.ColumnDef {
-  return {
-    name: c.name,
-    declaredType: c.planType ?? c.type,
-    type: c.type,
-    notNull: c.notNull ?? false,
-    collation: c.collation ?? 'binary',
-    ...(c.default !== undefined ? { default: { text: literalText(c.default), expr: { k: 'lit', value: c.default, type: litType(c.default) }, value: c.default } } : {}),
-  };
-}
-
-export function toColumnDef(c: ColumnSpec): plan.ColumnDef {
-  return columnDef(c);
-}
-
-const litType = (v: Value): plan.PlanType => (v === null ? 'null' : typeof v === 'string' ? 'text' : v instanceof Uint8Array ? 'blob' : typeof v === 'bigint' || Number.isInteger(v) ? 'int' : 'real');
-const literalText = (v: Value): string => (v === null ? 'NULL' : typeof v === 'string' ? JSON.stringify(v) : v instanceof Uint8Array ? `blob(${v.length})` : String(v));
-
-/** The engine's `TableDef` for a spec. */
-export function toTableDef(spec: TableSpec<any>): plan.TableDef {
-  const key = (k: KeySpec, kind: 'primaryKey' | 'unique'): plan.KeyDef => ({
-    kind,
-    columns: k.columns.map((c) => ({ column: columnIndex(spec, c), desc: false, collation: spec.columns[columnIndex(spec, c)]!.collation ?? 'binary' })),
-    ...(k.name ? { name: k.name } : {}),
-  });
-  return {
-    name: spec.name,
-    storage: spec.storage ?? 'row',
-    columns: spec.columns.map(columnDef),
-    keys: [...(spec.primaryKey ? [key(spec.primaryKey, 'primaryKey')] : []), ...(spec.unique ?? []).map((u) => key(u, 'unique'))],
-    checks: [],
-    foreignKeys: (spec.foreignKeys ?? []).map((f) => ({
-      columns: f.columns.map((c) => columnIndex(spec, c)),
-      table: f.table,
-      ...(f.refColumns ? { refColumns: f.refColumns } : {}),
-      onDelete: f.onDelete ?? 'NO ACTION',
-      onUpdate: f.onUpdate ?? 'NO ACTION',
-      deferrable: false,
-      isDeferrable: false,
-    })),
-  };
-}
-
-/** The engine's `IndexDef` for an index of a spec. */
-export function toIndexDef(spec: TableSpec<any>, index: IndexSpec): plan.IndexDef {
-  return {
-    name: index.name,
-    table: spec.name,
-    unique: index.unique ?? false,
-    columns: index.columns.map((c) => {
-      const i = columnIndex(spec, c.column);
-      return { column: i, desc: c.desc ?? false, collation: c.collation ?? spec.columns[i]!.collation ?? 'binary' };
-    }),
-  };
 }

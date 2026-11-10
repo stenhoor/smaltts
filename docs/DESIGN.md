@@ -409,7 +409,8 @@ Status against smaltdb `9cd575c` (2026-11-08). Most of the first round is in the
 | # | What | Status |
 |---|---|---|
 | **F1** | Renames failed once a materialized view existed (the engine's own tables had SQL text) | **fixed** (ADR 0017 §4) |
-| **E1** | Catalog as definitions | **mostly done**: `db.catalog` / `catalog()` (ADR 0016 §7) give plan, storage and declared types, collations, keys, indexes, storage and source. **Still missing:** foreign keys, CHECKs and default values (only `hasDefault`), which the differ needs. A small smaltdb PR. |
+| **E1** | Catalog as definitions | **mostly done**: `db.catalog` / `catalog()` (ADR 0016 §7) give plan, storage and declared types, collations, keys, indexes, storage and source. **Still missing:** foreign keys, CHECKs and default values (only `hasDefault`); smaltts reads those three from `information_schema` meanwhile, and would read them from the catalog once it lists them. A small smaltdb PR. |
+| **E11** | Expression texts of definitions without source text follow renames | **open**: a table defined without source text keeps its CHECK and default texts as given, and an in-place `renameColumn` cannot edit them (no language owns them), so smaltts plans a rebuild for a rename that a CHECK or computed default reads. The engine could keep such expressions by column position, or let the defining language register an editor without owning the table. |
 | **E2** | Structured EXPLAIN with costs | **open**: `plan` mode gives a detail string per node and no estimates; `analyze` gives estimated and actual rows, loops and time, no cost. |
 | **E3** | A view reference in plans | **done**: `scan` names a view, bound by its language (ADR 0016 §6). |
 | **E4** | More in-place changes, or an engine `rebuildTable` | open |
