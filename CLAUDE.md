@@ -34,10 +34,14 @@ To try an unmerged smaltdb change: `node scripts/fetch-packed.mjs --local smaltd
 
 ## Layout
 
-- `src/spec.ts`: specs (tables, indexes) and the typed builders. `src/catalog.ts`: a database read back as specs.
-  `src/changes.ts`: diff, change sets, apply and history. `src/rel.ts`: relations (the named IR) and compiling them to
-  engine plans. `src/database.ts`: `attach()` and the database API. `src/backend.ts`: engine and client backends.
-  `src/language.ts`: smaltts as a registered smaltdb language.
+- `src/spec.ts`: specs (tables, indexes) and the typed builders. `src/catalog.ts`: a database read back as specs, from
+  the engine's catalog API. `src/changes.ts`: diff, change sets, apply and history. `src/rel.ts`: relations (the named
+  IR), expressions (`fn`, `agg` and the aliases) and compiling them to engine plans. `src/functions.ts`: the engine's
+  functions, generated from its catalog (`test/functions.test.ts` fails when they change). `src/database.ts`:
+  `attach()` and the database API. `src/backend.ts`: engine and client backends. `src/source.ts`: the language name
+  and view sources, with no engine import.
+- `src/language.ts` is its own entry point (`@smaltworks/smaltts/language`, for where the engine runs): smaltts as a
+  registered smaltdb language, for its views. The main entry point (`src/index.ts`) imports only `smaltdb/plan`.
 
 ## Rules for this library
 
@@ -45,6 +49,10 @@ To try an unmerged smaltdb change: `node scripts/fetch-packed.mjs --local smaltd
 - Builders return JSON-safe data; running is a separate call. Never prompt; never guess renames.
 - Builders import `smaltdb/plan` (no engine), the language imports `smaltdb/language`; runtime imports of
   `smaltdb/engine` only in tests.
+- **Expressions are the engine's operations, by their engine names** (`fn.<name>`, `agg.<name>`), with methods only
+  where an operation has one meaning (ADR 0023). smaltts adds no meaning of its own.
+- **Erasable TypeScript only** in `src/` (no `enum`, `namespace`, constructor parameter properties):
+  `test/erasable.test.ts` strips every file with smaltty.
 - What the engine cannot do is proposed to smaltdb (DESIGN.md section 11), not emulated here. An engine bug is pinned
   with a `test.fails` that names its finding.
 - Never loosen or skip a test to get to green. Probe tests (`test/zz-*.test.ts`) are scratch files: never commit them.

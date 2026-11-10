@@ -12,11 +12,13 @@ prototype or planned, and for which milestone.
 
 ## In the prototype
 
-Against smaltdb `0b36f33`, the engine before its 0.9.0 plan API: specs declared and inferred, the catalog read back
-as specs, diffs with renames and rebuilds, policies and history, loads in four modes, typed plans with joins and
-aggregates, plain and materialized views, explain with measurements.
+Against smaltdb 0.9.0 (`1ce660a`): specs declared and inferred, the catalog read back as specs, diffs with renames
+and rebuilds, policies and history, loads in four modes, typed plans with joins and aggregates over the engine's
+operations by their engine names, plain and materialized views, explain with measurements, and errors that name the
+smaltts call they came from.
 
 ## Next
 
-[Milestone 1](../MILESTONES#_1-re-base-on-smaltdb-0-9-0): re-base the prototype on smaltdb 0.9.0. Then the engine's
-types in specs, a complete differ, and typed plans for the whole plan format.
+[Milestone 2](../MILESTONES#_2-specs-with-the-engine-s-types): the engine's types in specs (`bool`, dates and times,
+lists and structs). Then a complete differ, and typed plans for the whole plan format. Alongside, smaltty's checker
+brings back static type checks.

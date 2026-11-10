@@ -1,42 +1,27 @@
 /**
- * smaltts as a language of the engine (smaltdb ADR 0015).
+ * smaltts as a language of the engine (smaltdb ADRs 0015 and 0016 §6), for the objects it stores with source text:
+ * its views. Tables and indexes are defined without source text, so ALTER TABLE changes their definitions without
+ * asking any language.
  *
- * The engine keeps every object's source in the language that made it and asks that language for what it needs: to
- * bind a view where it is read, and to edit a source when ALTER TABLE renames or adds or drops a column. A smaltts
- * source is JSON: a table's or index's spec, or a view's relation IR (`RelNode`). Editing it is editing data, so it
- * never goes stale and never needs a parser.
+ * The engine keeps a view as its language's source and asks that language to bind it where it is read, and to edit it
+ * when ALTER TABLE renames a table or a column it reads. A smaltts view's source is its relation's JSON, so editing it
+ * is editing data, never text.
  *
  * `registerSmaltts()` must run wherever the engine runs (in-process, or in the worker entry: `defineWorker({ languages:
- * [smalttsLanguage] })`) before smaltts objects are altered or smaltts views are read.
+ * [smalttsLanguage] })`) before smaltts views are read or the tables they read are altered.
  */
-import type { BindContext, SmaltLanguage } from 'smaltdb/language';
-import { collationByName, collationName, registerLanguage } from 'smaltdb/language';
+import type { BindContext, CatalogTable, SmaltLanguage } from 'smaltdb/language';
+import { collationByName, registerLanguage } from 'smaltdb/language';
 import * as P from 'smaltdb/plan';
-import { type RelNode, type ExprNode, compileRel } from './rel.js';
-import type { Collation, StorageType, TableSpec } from './spec.js';
+import { specOfCatalogTable } from './catalog.js';
+import { type ExprNode, type RelNode, compileRel } from './rel.js';
+import { LANGUAGE, type ViewSource } from './source.js';
 
-export const LANGUAGE = 'smaltts';
-
-/** A view's source: its relation and, optionally, its column names. */
-export interface ViewSource {
-  readonly kind: 'view';
-  readonly rel: RelNode;
-}
+export { LANGUAGE, type ViewSource } from './source.js';
 
 type Json = Record<string, unknown>;
 const parse = (text: string): Json => JSON.parse(text) as Json;
 const same = (a: unknown, b: string) => typeof a === 'string' && a.toLowerCase() === b.toLowerCase();
-
-/** A table of the catalog, as a spec (enough to compile against: names, types, collations). */
-function specOf(ctx: BindContext, name: string): TableSpec | undefined {
-  const t = ctx.getTable(name);
-  if (!t) return undefined;
-  return {
-    kind: 'table',
-    name: t.name,
-    columns: t.columns.map((c) => ({ name: c.name, type: c.type as StorageType, notNull: c.notNull, collation: collationName(c.collation) as Collation })),
-  };
-}
 
 /** A smaltts view of the catalog, as its relation (inlined where it is read). */
 function viewOf(ctx: BindContext, name: string): RelNode | undefined {
@@ -57,7 +42,23 @@ function walkRel(n: RelNode, f: (n: RelNode) => void): void {
 
 /** Rename references in a view's relation (table names in scans; column names everywhere they appear). */
 function mapRel(n: RelNode, table: (name: string) => string, column: (name: string) => string): RelNode {
-  const e = (x: ExprNode): ExprNode => (x.k === 'col' ? { ...x, name: column(x.name) } : x.k === 'op' || x.k === 'agg' ? { ...x, args: x.args.map(e) } : x);
+  const e = (x: ExprNode): ExprNode => {
+    switch (x.k) {
+      case 'col':
+        return { ...x, name: column(x.name) };
+      case 'fn':
+      case 'and':
+      case 'or':
+        return { ...x, args: x.args.map(e) };
+      case 'agg':
+        return { ...x, args: x.args.map(e), ...(x.filter ? { filter: e(x.filter) } : {}) };
+      case 'not':
+      case 'isNull':
+        return { ...x, arg: e(x.arg) };
+      default:
+        return x;
+    }
+  };
   const r = (x: RelNode): RelNode => mapRel(x, table, column);
   switch (n.r) {
     case 'scan':
@@ -83,25 +84,34 @@ function mapRel(n: RelNode, table: (name: string) => string, column: (name: stri
   }
 }
 
+/** A view source with its relation edited, or the text unchanged when it is not a smaltts view. */
+function editView(text: string, table: (name: string) => string, column: (name: string) => string): string {
+  const o = parse(text);
+  if (o.kind !== 'view') return text;
+  return JSON.stringify({ ...o, rel: mapRel(o.rel as RelNode, table, column) });
+}
+
+const unchanged = (text: string): string => text;
+
 export const smalttsLanguage: SmaltLanguage = {
   name: LANGUAGE,
-  parse() {
-    throw new Error('smaltts statements are plans: run them with queryPlan');
-  },
-  parseOne() {
-    throw new Error('smaltts statements are plans: run them with queryPlan');
-  },
-  bindStoredExprs: (table) => ({ checks: [], defaults: table.columns.map(() => null) }),
   bindView(source, ctx) {
     const view = parse(source.text) as unknown as ViewSource;
-    const compiled = compileRel(view.rel, { table: (name) => specOf(ctx, name), view: (name) => viewOf(ctx, name) });
+    const compiled = compileRel(view.rel, {
+      table: (name) => {
+        const t: CatalogTable | undefined = ctx.table(name);
+        return t ? specOfCatalogTable(t) : undefined;
+      },
+      view: (name) => viewOf(ctx, name),
+      resultType: (name, args) => ctx.catalog.resultType(name, args),
+    });
     if (compiled.params.length) throw new Error('a view cannot have parameters');
     // The engine reads a view's plan in the shape its planner takes: a projection on top.
     const top = compiled.plan.op === 'project' ? compiled.plan : P.project(compiled.plan, compiled.fields.map((f, i) => P.col(0, i, f.type, f.collation)));
     return {
       kind: 'query',
       plan: top,
-      columns: compiled.fields.map((f) => ({ name: f.name, type: f.type, collation: collationByName(f.collation)!, affinity: 'NONE' })),
+      columns: compiled.fields.map((f) => ({ name: f.name, type: f.type, collation: collationByName(f.collation)!, affinity: 'NONE' as const })),
     };
   },
   viewReferences(source) {
@@ -113,44 +123,12 @@ export const smalttsLanguage: SmaltLanguage = {
   },
   viewDefinition: (source) => JSON.stringify((parse(source.text) as unknown as ViewSource).rel),
   sourceEditor: {
-    renameTable(text, oldName, newName) {
-      const o = parse(text);
-      if (o.kind === 'view') return JSON.stringify({ ...o, rel: mapRel(o.rel as RelNode, (t) => (same(t, oldName) ? newName : t), (c) => c) });
-      const out: Json = { ...o };
-      if (same(o.name, oldName) && o.kind === 'table') out.name = newName;
-      if (same(o.table, oldName)) out.table = newName;
-      if (Array.isArray(o.foreignKeys)) out.foreignKeys = (o.foreignKeys as Json[]).map((f) => (same(f.table, oldName) ? { ...f, table: newName } : f));
-      return JSON.stringify(out);
-    },
-    renameColumn(text, table, oldName, newName) {
-      const o = parse(text);
-      const ren = (c: unknown) => (same(c, oldName) ? newName : c);
-      if (o.kind === 'view') return JSON.stringify({ ...o, rel: mapRel(o.rel as RelNode, (t) => t, (c) => (same(c, oldName) ? newName : c)) });
-      if (o.kind === 'table' && same(o.name, table)) {
-        const keyOf = (k: Json) => ({ ...k, columns: (k.columns as unknown[]).map(ren) });
-        return JSON.stringify({
-          ...o,
-          columns: (o.columns as Json[]).map((c) => (same(c.name, oldName) ? { ...c, name: newName } : c)),
-          ...(o.primaryKey ? { primaryKey: keyOf(o.primaryKey as Json) } : {}),
-          ...(o.unique ? { unique: (o.unique as Json[]).map(keyOf) } : {}),
-          ...(o.indexes ? { indexes: (o.indexes as Json[]).map((ix) => ({ ...ix, columns: (ix.columns as Json[]).map((c) => ({ ...c, column: ren(c.column) })) })) } : {}),
-        });
-      }
-      if (Array.isArray(o.columns) && o.kind === undefined) {
-        // An index spec.
-        return JSON.stringify({ ...o, columns: (o.columns as Json[]).map((c) => ({ ...c, column: ren(c.column) })) });
-      }
-      return text;
-    },
-    renameColumnInExpr: (text) => text,
-    addColumn(tableText, columnText) {
-      const o = parse(tableText);
-      return JSON.stringify({ ...o, columns: [...(o.columns as Json[]), parse(columnText)] });
-    },
-    dropColumn(tableText, column) {
-      const o = parse(tableText);
-      return JSON.stringify({ ...o, columns: (o.columns as Json[]).filter((_, i) => i !== column) });
-    },
+    renameTable: (text, oldName, newName) => editView(text, (t) => (same(t, oldName) ? newName : t), (c) => c),
+    renameColumn: (text, _table, oldName, newName) => editView(text, (t) => t, (c) => (same(c, oldName) ? newName : c)),
+    renameColumnInExpr: unchanged,
+    // smaltts defines tables without source text, so these never reach a smaltts source.
+    addColumn: unchanged,
+    dropColumn: unchanged,
     externalTable: (name, columns, options) => JSON.stringify({ kind: 'externalTable', name, columns, options }),
   },
 };

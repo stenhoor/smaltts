@@ -9,7 +9,7 @@
 import type * as plan from 'smaltdb/plan';
 
 /** How the engine stores a column's values (smaltdb tables are strict). */
-export type StorageType = 'INTEGER' | 'REAL' | 'TEXT' | 'BLOB' | 'NUMERIC' | 'ANY';
+export type StorageType = 'INTEGER' | 'REAL' | 'TEXT' | 'BLOB' | 'NUMERIC' | 'ANY' | 'BOOLEAN' | 'DATE' | 'DATETIME' | 'TIME' | 'DURATION' | 'LIST' | 'STRUCT';
 export type Collation = 'binary' | 'nocase' | 'rtrim';
 export type Value = number | bigint | string | Uint8Array | null;
 
@@ -73,10 +73,12 @@ export class ColumnBuilder<T, N extends boolean = true, D extends boolean = fals
   declare readonly $type: T;
   declare readonly $nullable: N;
   declare readonly $hasDefault: D;
-  constructor(
-    readonly spec: Omit<ColumnSpec, 'name'>,
-    readonly flags: { readonly primaryKey?: boolean; readonly unique?: boolean; readonly index?: boolean } = {},
-  ) {}
+  readonly spec: Omit<ColumnSpec, 'name'>;
+  readonly flags: { readonly primaryKey?: boolean; readonly unique?: boolean; readonly index?: boolean };
+  constructor(spec: Omit<ColumnSpec, 'name'>, flags: { readonly primaryKey?: boolean; readonly unique?: boolean; readonly index?: boolean } = {}) {
+    this.spec = spec;
+    this.flags = flags;
+  }
   notNull(): ColumnBuilder<T, false, D> {
     return new ColumnBuilder({ ...this.spec, notNull: true }, this.flags);
   }
@@ -190,7 +192,8 @@ export function inferTable(name: string, rows: readonly Record<string, unknown>[
 // ---------------------------------------------------------------------------------------------------------------
 // Specs as engine definitions.
 
-const PLAN_TYPE: Record<StorageType, plan.PlanType> = { INTEGER: 'int', REAL: 'real', NUMERIC: 'num', TEXT: 'text', BLOB: 'blob', ANY: 'any' };
+// LIST and STRUCT need their element types for a precise plan type: milestone 2 (specs with the engine's types).
+const PLAN_TYPE: Record<StorageType, plan.PlanType> = { INTEGER: 'int', REAL: 'real', NUMERIC: 'num', TEXT: 'text', BLOB: 'blob', ANY: 'any', BOOLEAN: 'bool', DATE: 'date', DATETIME: 'datetime', TIME: 'time', DURATION: 'duration', LIST: 'any', STRUCT: 'any' };
 export const planTypeOf = (t: StorageType): plan.PlanType => PLAN_TYPE[t];
 
 export function columnIndex(spec: TableSpec<any>, name: string): number {

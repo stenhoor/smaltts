@@ -3,8 +3,8 @@
 The smaltts API specification. It describes the API as designed in [DESIGN.md](DESIGN.md), in the order of its
 parts. Each entry says how far it is:
 
-- **Prototype:** in `src/` today, against smaltdb `0b36f33`. Names and shapes may still change when it is re-based on
-  smaltdb 0.9.0 ([milestone 1](MILESTONES.md#_1-re-base-on-smaltdb-0-9-0)).
+- **Prototype:** in `src/` today, against smaltdb 0.9.0 (`1ce660a`). Names and shapes may still change before smaltts's
+  first release.
 - **Planned (milestone N):** specified here, not built yet; see [MILESTONES.md](MILESTONES.md).
 
 Every TypeScript example on this page that is not marked planned is stripped with
@@ -30,7 +30,8 @@ smaltts is not on npm. Its package will be `@smaltworks/smaltts`, published with
 
 ```ts
 import { Database } from 'smaltdb/engine';
-import { attach, registerSmaltts } from '@smaltworks/smaltts';
+import { attach } from '@smaltworks/smaltts';
+import { registerSmaltts } from '@smaltworks/smaltts/language';
 
 registerSmaltts();
 const db = attach(Database.openMemory());
@@ -39,7 +40,7 @@ const db = attach(Database.openMemory());
 | | | |
 |---|---|---|
 | `attach(db)` | A `SmaltDb` over an engine `Database` (`smaltdb/engine`), a client `Database` (`smaltdb`, the engine in a worker), or a `Backend`. | Prototype (the client path is untested until milestone 10) |
-| `registerSmaltts()` | Registers smaltts with the engine as the language of the views it stores. Call it where the engine runs; in a worker entry, `defineWorker({ languages: [smalttsLanguage] })`. | Prototype |
+| `registerSmaltts()` (from `@smaltworks/smaltts/language`) | Registers smaltts with the engine as the language of the views it stores. Call it where the engine runs; in a worker entry, `defineWorker({ languages: [smalttsLanguage] })`. | Prototype |
 | `engineBackend(db)`, `clientBackend(db)`, `backendOf(db)` | The `Backend` interface over each kind of database: `run(statement, params)`, `transaction(fn)`, `callPlugin(…)`. | Prototype |
 
 ## Specs and types
@@ -123,7 +124,8 @@ const tables = catalog.tables.map((t) => t.name);
 
 | | | |
 |---|---|---|
-| `db.catalog({ fresh? })` | The database as specs: `tables`, `views` (`{ name, materialized, definition }`), `table(name)` (tables and materialized views), `view(name)` (a smaltts view's relation). Cached until a change; `fresh` reads again. | Prototype (reads `information_schema`; the engine's catalog API in milestone 1) |
+| `db.catalog({ fresh? })` | The database as specs, from the engine's catalog API: `tables`, `views` (`{ name, materialized, language, definition }`), `table(name)` (tables and materialized views), `view(name)` (a smaltts view's relation), `foreignView(name)` (another language's view's column names). Cached until a change; `fresh` reads again. | Prototype (default values from `information_schema` until the catalog lists them) |
+| `specOfCatalogTable(table)` | One of the engine's catalog tables (`CatalogTable`) as a spec. | Prototype |
 | `readCatalog(backend)` | The same, from a `Backend`. | Prototype |
 
 Reading a database and diffing it against its own catalog gives no steps. Foreign keys, CHECKs and default values join
@@ -218,23 +220,26 @@ Callbacks receive the row's columns as typed expressions (`Expr<T>`): a misspelt
 
 | | | |
 |---|---|---|
-| Comparisons: `.eq`, `.ne`, `.lt`, `.lte`, `.gt`, `.gte`, `.in([...])`, `.like(p)`, `.isNull()`, `.isNotNull()` | the engine's `cmp_*`, `in_list`, `like`, `isNull` | Prototype (on `sql.*` names until milestone 1) |
-| Logic: `.and`, `.or`, `.not()`, `and(...)`, `or(...)` | the logic nodes | Prototype |
-| Arithmetic: `.add`, `.sub`, `.mul`, `.mod` | the engine's arithmetic | Prototype |
-| `.orElse(v)` (coalesce), `.lower()`, `.upper()`, `.concat(s)`, `.collate(c)` | `coalesce`, `lower`, `upper`, `concat` | Prototype |
-| `fn.<operation>(...args)`: any engine operation by its engine name (`fn.div_float`, `fn.div_trunc`, `fn.round_half_even`, `fn.to_zone`, …), typed from a table of signatures | the operation itself | Planned (milestone 5) |
-| `lit(v)`, `col(name)` | a literal, a column by name | Prototype |
-| `param.int(name)`, `.real`, `.text`, `.any` | a named parameter, given when the plan runs | Prototype |
-| `agg.count(e?)`, `.countDistinct`, `.sum`, `.total`, `.avg`, `.min`, `.max` | aggregates | Prototype; the engine's full list planned (milestone 5) |
+| `fn.<name>(...args)`: every engine operation and scalar function, by its engine name (`fn.add`, `fn.add_checked`, `fn.div_float`, `fn.div_trunc`, `fn.lower_unicode`, `fn.round_half_even`, `fn.to_zone`, …), typed by the engine's result type | the operation itself | Prototype |
+| Comparisons: `.eq`, `.ne`, `.lt`, `.lte`, `.gt`, `.gte`, `.is`, `.isNot`, `.in([...])`, `.like(p)`, `.glob(p)` | `cmp_eq` … `cmp_ge`, `cmp_is`, `cmp_is_not`, `in_list`, `like`, `glob`; results are the engine's `bool` | Prototype |
+| Logic and NULLs: `.and`, `.or`, `.not()`, `and(...)`, `or(...)`, `not(x)`, `.isNull()`, `.isNotNull()`, `.orElse(v)` | the logic nodes, `isNull`, `coalesce` | Prototype |
+| `.collate(c)` | the collation a comparison compares text by | Prototype |
+| `lit(v)`, `col(name)` | a literal (a JavaScript boolean is a `bool`), a column by name | Prototype |
+| `param.int(name)`, `.real`, `.text`, `.bool`, `.any` | a named parameter, given when the plan runs | Prototype |
+| `agg.<name>(...args, { distinct?, filter? })`: every engine aggregate by its engine name (`agg.sum`, `agg.count()` for rows, `agg.first`, `agg.median`, `agg.implode`, …) | the aggregate itself | Prototype |
 
-The prototype's `.div` and `.intDiv` give a meaning of smaltts's own; the thin rule replaces them with
-`fn.div_float` and `fn.div_trunc` (milestone 5).
+**Aliases only where an operation has one meaning** (ADR 0023, owner's decision 15). Arithmetic (`fn.add` or
+`fn.add_checked`), division (`fn.div_float`, `fn.div_trunc`, `fn.div_floor`), case (`fn.lower` or `fn.lower_unicode`)
+and concatenation (`fn.text_concat` or `fn.concat`) have more than one, so they are called by their engine names.
+`fn` and `agg` are generated from the engine's catalog (`src/functions.ts`), and a test fails when the engine's list
+changes.
 
 ## Views
 
 ```ts
 import { Database } from 'smaltdb/engine';
-import { agg, attach, int, real, registerSmaltts, scan, table } from '@smaltworks/smaltts';
+import { agg, attach, int, real, scan, table } from '@smaltworks/smaltts';
+import { registerSmaltts } from '@smaltworks/smaltts/language';
 
 registerSmaltts();
 const db = attach(Database.openMemory());
@@ -261,7 +266,7 @@ the DDL need the engine (E10).
 
 ```ts
 import { Database } from 'smaltdb/engine';
-import { attach, int, real, scan, table } from '@smaltworks/smaltts';
+import { attach, fn, int, real, scan, table } from '@smaltworks/smaltts';
 
 const db = attach(Database.openMemory());
 const orders = table('orders', { id: int().primaryKey(), customerId: int().notNull(), total: real().notNull() });
@@ -271,7 +276,7 @@ await db.load(orders, [{ customerId: 1, total: 10 }]);
 await db.load(orders, [{ id: 1, customerId: 1, total: 12 }], { mode: 'upsert' });
 await db.load(orders, scan(orders).filter((o) => o.total.gt(0)), { mode: 'swap' });
 await db.deleteWhere(orders, (o) => o.total.lt(0));
-await db.updateWhere(orders, (o) => ({ total: o.total.mul(2) }), (o) => o.customerId.eq(1));
+await db.updateWhere(orders, (o) => ({ total: fn.mul(o.total, 2) }), (o) => o.customerId.eq(1));
 ```
 
 | | | |
@@ -353,9 +358,9 @@ const io = db.plugin('@smaltdb/io');
 
 | | | |
 |---|---|---|
-| `smalttsLanguage` | smaltts's `SmaltLanguage`: binds the views it stores (their source is the relation's JSON) and edits its sources when ALTER TABLE renames, adds or drops columns. | Prototype |
-| `LANGUAGE` | `'smaltts'`, the language name sources record. | Prototype |
-| Tables and indexes without source text; the language for views only | | Planned (milestone 1) |
+| `@smaltworks/smaltts/language` | The language's entry point, for where the engine runs: it imports `smaltdb/language`. The package's main entry point imports only `smaltdb/plan`, so a page that builds plans loads no engine. | Prototype |
+| `smalttsLanguage`, `registerSmaltts()` | smaltts's `SmaltLanguage`, for its views only: it binds them (their source is the relation's JSON) and edits them when ALTER TABLE renames a table or a column they read. Tables and indexes are defined without source text (smaltdb ADR 0016 §6). | Prototype |
+| `LANGUAGE` | `'smaltts'`, the language name sources record (from the main entry point). | Prototype |
 
 ## Errors
 
@@ -364,4 +369,4 @@ const io = db.plugin('@smaltdb/io');
 | Unknown names | `compile` throws, naming the column and the columns that exist. | Prototype |
 | Policy refusals | `apply` throws, listing each refused step with its impact and data loss. | Prototype |
 | A failed step | `apply` throws `<action> <object>: <engine message>`, with the engine error as `cause`; nothing is applied. | Prototype |
-| `origin` | Engine errors name the smaltts call that built the failing node (smaltdb ADR 0016 §10). | Planned (milestone 1) |
+| `origin` | Every plan node smaltts builds carries `{ smaltts: '<call>' }` (`'filter'`, `'fn.add_checked'`, …); an engine error raised while a plan runs gives back the innermost one as `error.origin` (smaltdb ADR 0016 §10). | Prototype |

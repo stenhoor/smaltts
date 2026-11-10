@@ -17,7 +17,8 @@ npm run check            # the tests
 
 ```ts
 import { Database } from 'smaltdb/engine';
-import { attach, describe, int, real, registerSmaltts, scan, table, agg } from '@smaltworks/smaltts';
+import { attach, describe, int, real, scan, table, agg } from '@smaltworks/smaltts';
+import { registerSmaltts } from '@smaltworks/smaltts/language';
 
 registerSmaltts();
 const db = attach(Database.openMemory());
