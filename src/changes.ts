@@ -471,7 +471,7 @@ export interface Applied {
 }
 
 /** Run a change set in one transaction, if `policy` allows it, and record it in the history table. */
-export async function apply(db: Backend, changes: ChangeSet, policy: ApplyPolicy = {}): Promise<Applied> {
+export async function apply(db: Backend, changes: ChangeSet, policy: ApplyPolicy = {}, file?: { readonly name: string; readonly checksum: string }): Promise<Applied> {
   const errors = changes.diagnostics.filter((d) => d.level === 'error');
   if (errors.length) throw new Error(`the change set has errors: ${errors.map((e) => `${e.object}: ${e.message}`).join('; ')}`);
   const loss = policy.allowDataLoss ?? 'none';
@@ -489,7 +489,7 @@ export async function apply(db: Backend, changes: ChangeSet, policy: ApplyPolicy
         }
       }
     }
-    await recordHistory(tx, changes, policy.label);
+    await recordHistory(tx, changes, policy.label, file);
   });
   return { steps: changes.steps.length, checksum: changes.checksum };
 }
@@ -502,14 +502,29 @@ const historySpec: TableSpec = {
     { name: 'checksum', type: 'TEXT', notNull: true },
     { name: 'label', type: 'TEXT' },
     { name: 'steps', type: 'TEXT', notNull: true },
+    // A saved change-set file's name and checksum (milestone 4), when the change set came from one.
+    { name: 'file', type: 'TEXT' },
+    { name: 'file_checksum', type: 'TEXT' },
   ],
   primaryKey: { columns: ['id'] },
 };
 
-async function recordHistory(db: Backend, changes: ChangeSet, label: string | undefined): Promise<void> {
+async function recordHistory(db: Backend, changes: ChangeSet, label: string | undefined, file?: { readonly name: string; readonly checksum: string }): Promise<void> {
+  await ensureHistory(db);
+  const steps = JSON.stringify(changes.steps.map((s) => ({ action: s.action, object: s.object, reason: s.reason })));
+  const row = P.values([[P.lit(changes.checksum), P.lit(label ?? null), P.lit(steps), P.lit(file?.name ?? null), P.lit(file?.checksum ?? null)]], ['text', 'text', 'text', 'text', 'text']);
+  await db.run({ kind: 'write', plan: P.append(HISTORY_TABLE, row, [1, 2, 3, 4, 5]) });
+}
+
+/** The history table, created if missing, with the file columns added to one made before milestone 4. */
+export async function ensureHistory(db: Backend): Promise<void> {
   await db.run({ kind: 'schema', op: { op: 'createTable', table: toTableDef(historySpec), temp: false, ifNotExists: true } });
-  const row = P.values([[P.lit(changes.checksum), P.lit(label ?? null), P.lit(JSON.stringify(changes.steps.map((s) => ({ action: s.action, object: s.object, reason: s.reason }))))]], ['text', 'text', 'text']);
-  await db.run({ kind: 'write', plan: P.append(HISTORY_TABLE, row, [1, 2, 3]) });
+  const t = (await db.catalog()).tables.find((x) => same(x.name, HISTORY_TABLE));
+  for (const c of historySpec.columns) {
+    if (t && !t.columns.some((x) => same(x.name, c.name))) {
+      await db.run({ kind: 'schema', op: { op: 'alterTable', table: HISTORY_TABLE, action: { kind: 'addColumn', column: toColumnDef(c), checks: [], foreignKeys: [], text: JSON.stringify(c) } } });
+    }
+  }
 }
 
 /** Render a change set for review. */
@@ -519,14 +534,14 @@ export function describe(changes: ChangeSet): string {
   return [`${changes.steps.length} step(s), impact ${changes.impact}, data loss ${changes.dataLoss}, checksum ${changes.checksum}`, ...lines, ...notes].join('\n');
 }
 
-function jsonSafe(_: string, v: unknown): unknown {
+export function jsonSafe(_: string, v: unknown): unknown {
   if (typeof v === 'bigint') return { $bigint: v.toString() };
   if (v instanceof Uint8Array) return { $blob: [...v] };
   return v;
 }
 
 /** FNV-1a, 64-bit, as hex. */
-function checksum(text: string): string {
+export function checksum(text: string): string {
   let h = 0xcbf29ce484222325n;
   for (let i = 0; i < text.length; i++) h = BigInt.asUintN(64, (h ^ BigInt(text.charCodeAt(i))) * 0x100000001b3n);
   return h.toString(16).padStart(16, '0');

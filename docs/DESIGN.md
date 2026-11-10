@@ -456,13 +456,15 @@ asof joins, sample, `ignoreNulls`, explode).
 
 ## 13. Prototype status
 
-The prototype (`src/`, 167 tests) runs against smaltdb 0.9.0 (`1ce660a`).
+The prototype (`src/`, 178 tests) runs against smaltdb 0.9.0 (`1ce660a`).
 
 - **Milestone 1:** expressions are the engine's operations by their engine names (`fn`, `agg`, and the aliases of
   section 7), the catalog comes from the engine's catalog API, tables and indexes are defined without source text, the
   language serves views only and has its own entry point, and every plan node carries an `origin`.
 - **Milestone 2:** the engine's types in specs (section 5.1), with CHECKs, computed defaults and foreign keys.
 - **Milestone 3:** the complete differ, with the conversion table of section 8.3.
+- **Milestone 4:** saved change sets (gate A): files that hold a change set and the schema it leads to, replayed in
+  order with edit, order and drift checks (`src/files.ts`).
 - **Milestone 5:** one builder per plan operation (section 7), each compiling to the plan the raw builders give, and
   correlated subqueries at any depth. The engine's operations are typed by a table of signatures
   (`src/signatures.ts`), its other functions loosely, and every call's argument count is checked against the catalog.

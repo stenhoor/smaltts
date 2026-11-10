@@ -81,6 +81,7 @@ table, row and columnar tables (`test/diff.test.ts`). Gate A is next.
 ## 4. Saved change sets
 
 Size: M (gate A chose live diff plus saved change sets).
+Status: done, 2026-11-10: `changeSetFile`, `parseChangeSetFile` and `db.migrateFiles` (`test/files.test.ts`).
 
 - `db.migrateFiles(dir)`: replay unapplied change-set files in order, refuse edited files (checksums), and report
   drift between the history and the catalog.
@@ -171,7 +172,7 @@ Size: M. Needs smaltdb's 0.9.0 publish.
 | 1 | Re-base | M | done (2026-11-10) |
 | 2 | Types in specs | M | done (2026-11-10) |
 | 3 | Diff complete | L | done (2026-11-10) |
-| 4 | Saved change sets | M | 3; gate A (decided) |
+| 4 | Saved change sets | M | done (2026-11-10) |
 | 5 | Typed plans | M | done (2026-11-10) |
 | 6 | Views | M | 3, 5; part 2 on smaltdb E10 (L); gate B (decided) |
 | 7 | Flows | L | 3, 5; gate C |
