@@ -7,8 +7,9 @@ parts. Each entry says how far it is:
   smaltdb 0.9.0 ([milestone 1](MILESTONES.md#_1-re-base-on-smaltdb-0-9-0)).
 - **Planned (milestone N):** specified here, not built yet; see [MILESTONES.md](MILESTONES.md).
 
-Every TypeScript example on this page that is not marked planned is typechecked against `src/` by
-`test/reference.test.ts`.
+Every TypeScript example on this page that is not marked planned is stripped with
+[smaltty](https://stenhoor.github.io/smaltty/) (so it must be erasable TypeScript) and run against the engine by
+`test/reference.test.ts`. Static type checks of the examples return with smaltty's checker.
 
 smaltts is not on npm. Its package will be `@smaltworks/smaltts`, published with smaltdb.
 
@@ -213,7 +214,7 @@ const spend = scan(orders)
 
 ### Expressions
 
-Callbacks receive the row's columns as typed expressions (`Expr<T>`): a misspelt column or a wrong type fails `tsc`.
+Callbacks receive the row's columns as typed expressions (`Expr<T>`): a misspelt column or a wrong type is a type error (checked once smaltty's checker covers smaltts).
 
 | | | |
 |---|---|---|

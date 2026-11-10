@@ -27,7 +27,7 @@ copy here: lines and roles change, and a copy taken before the change is out of 
 | Command | What it does | When |
 |---|---|---|
 | `npm ci && npm run deps` | Installs dependencies, then the pinned smaltdb build in `packed.json` | First, and again after every `npm ci` or `npm install` |
-| `npm run check` | `npm run typecheck` then `npm test` (vitest) | Before every commit |
+| `npm run check` | `npm test` (vitest; the reference's examples are stripped with smaltty and run) | Before every commit |
 | `npm run docs:dev` | The docs site (VitePress) with live reload; `npm run docs:build` fails on dead links | Docs changes |
 
 To try an unmerged smaltdb change: `node scripts/fetch-packed.mjs --local smaltdb=../smaltdb`.
@@ -51,8 +51,12 @@ To try an unmerged smaltdb change: `node scripts/fetch-packed.mjs --local smaltd
   Don't reformat files with Prettier.
 - No runtime dependencies. smaltdb is a peer dependency.
 - **The API reference is the specification** (`docs/REFERENCE.md`): a change to the API changes it in the same PR.
-  Its TypeScript examples are typechecked against `src/` by `test/reference.test.ts`; mark an example of API that is
-  not built yet with `<!-- spec:planned -->` on the line before it.
+  Its TypeScript examples are stripped with smaltty and run by `test/reference.test.ts`; mark an example of API that
+  is not built yet with `<!-- spec:planned -->` on the line before it.
+- **TypeScript tooling is smaltty's** (owner's decision, 2026-11-10): no `typescript` dependency. smaltts uses smaltty,
+  and extends it, for parsing, stripping and checking; static checks return with smaltty's checker. Development and
+  test tools allowed without asking: other smaltworks packages, Node's types and vitest (and VitePress for the site);
+  none of them in deployed code.
 - **The site** (`docs/`, deployed to GitHub Pages from `main` by `.github/workflows/docs.yml`) uses smalt-brand's
   VitePress theme, copied unchanged into `docs/.vitepress/theme/`, and its badges and logos in `docs/public/`.
 

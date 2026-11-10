@@ -237,7 +237,8 @@ by rule:
   a new engine operation is available without a smaltts release (typed loosely until smaltts's table of signatures
   names it).
 - **Names resolve when the plan is compiled,** against the specs or the catalog, and fail then, naming the builder
-  call (`origin`, ADR 0016 §10). Typos and wrong types fail `tsc` first where the row type is known.
+  call (`origin`, ADR 0016 §10). Typos and wrong types are type errors first, where the row type is known (checked by smaltty's checker once it
+  covers smaltts).
 - **No query semantics of smaltts's own,** and no frames: an application that wants dataframes uses smaltdf, one that
   wants SQL uses smaltql. All three build plans for the same engine, and their tables and views read each other.
 
@@ -430,8 +431,10 @@ asof joins, sample, `ignoreNulls`, explode).
   shape), writes and stores views: that is DML first, shaped by data. smaltts's part is the schema itself: declared
   keys, indexes and constraints, the catalog, diffs, change sets, interfaces and flows.
 - **smaltty and smaltsc**: smaltty, the TypeScript kit, strips and binds the TypeScript users run in smaltui and
-  smaltnb, and will check calls into smaltdf first; other APIs wait (its milestones). smaltts keeps its `.d.ts` shallow
-  and declaration-only so that it can be checked the same way later. smaltsc, the planned schema checker (table and
+  smaltnb. It is also smaltts's TypeScript tooling (owner's decision, 2026-11-10): smaltts has no `typescript`
+  dependency, its reference examples are stripped with smaltty, and smaltty's checker is extended to cover smaltts as
+  well as smaltdf, which brings back smaltts's static checks. smaltts keeps its `.d.ts` shallow and declaration-only
+  so that the checker can read it. smaltsc, the planned schema checker (table and
   column names against a schema), is where smaltts's specs and catalog are the natural input.
 - **smaltfl** (owner's decision): the pipeline product **built on smaltts**. smaltts provides the transactional units
   (change sets, loads, views, refreshes, explain) and stays free of orchestration (schedules, DAGs, lineage UI).
@@ -442,8 +445,8 @@ The prototype (`src/`, `test/smaltts.test.ts`: 15 tests and one expected failure
 engine before ADRs 0016–0020. Against `9cd575c` it does not build: the `sql.*` operations it calls are gone, the
 language interface changed (`BindContext.catalog`, no `bindStoredExprs`), and 6 tests fail. It also predates
 sections 5.1, 7 (thin expressions) and 8 (reflecting by default, column lists, the conversion table). Milestone 1 of
-[MILESTONES.md](MILESTONES.md) re-bases it. Its pin in `packed.json` and its dev dependencies (`typescript`, `vitest`,
-`@types/node`, as smaltdf has) were added before the rule on outside code, and need the owner's yes.
+[MILESTONES.md](MILESTONES.md) re-bases it. Its dev dependencies were settled by the owner on 2026-11-10 (milestone 0): no `typescript`; smaltty, Node's types
+and vitest for development and tests.
 
 ## 14. Decisions and open questions
 
@@ -467,6 +470,11 @@ sections 5.1, 7 (thin expressions) and 8 (reflecting by default, column lists, t
     explicit.
 11. **smaltts is thin** (smalt-brand's description, 2026-11-08): typed plan and schema operations with structured
     flows, no query semantics of its own (section 7).
+12. **Expression names** (2026-11-10): every engine operation as `fn.<engine name>`, with short aliases only where an
+    operation has one meaning (section 7).
+13. **TypeScript tooling is smaltty's** (2026-11-10): no `typescript` dependency; smaltty's checker is extended to
+    cover smaltts. These and the earlier decisions are recorded in [ADR 0023](adr/0023-the-smaltts-language.md),
+    accepted on 2026-11-10.
 
 Superseded by smaltdb ADR 0019 (accepted by the owner on 2026-11-07, after the 2026-11-06 interview): precision as
 part of the type, separate local and UTC types, `INTERVAL` with months, and a SQL dialect version. smaltts follows
@@ -484,7 +492,5 @@ ADR 0019 (section 5.1).
 2. **Plugins**: typed descriptors (a plugin ships a smaltts module with typed methods and table functions), or the
    generic `plugin(name).call()` only? Should connections and external tables be specs that are diffed and applied?
 3. **Engine proposals**: open F1, E1–E10 as smaltdb issues now, and in which order? (E10 first for views; F1 is a bug.)
-4. **Expressions**: engine operation names only (`fn.div_float`), or also a small set of smaltts aliases (section
-   7)? The thin rule suggests names only, with aliases just where an operation has one meaning.
-5. **Typed column lists in SQL**: E10 captures an interface's types when the view is created. Should smaltql also
+4. **Typed column lists in SQL**: E10 captures an interface's types when the view is created. Should smaltql also
    accept declared types in the list (`CREATE VIEW v(a INTEGER, b REAL) AS …`), a smaltql addition?

@@ -1,15 +1,19 @@
 /**
- * The API reference is the specification: every TypeScript example in docs/REFERENCE.md (and the guide) typechecks
- * against src/, except those marked `<!-- spec:planned -->` (API that is specified but not built yet).
+ * The API reference is the specification: every TypeScript example in docs/REFERENCE.md and the guide must strip with
+ * smaltty (erasable TypeScript, as smaltui and smaltnb run it) and then run against the in-process engine. Examples of
+ * API that is specified but not built yet are marked `<!-- spec:planned -->` and skipped.
+ *
+ * Static type checks of the examples return when smaltty's checker covers smaltts (docs/MILESTONES.md).
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join } from 'node:path';
-import ts from 'typescript';
-import { expect, test } from 'vitest';
+import { strip } from 'smaltty';
+import { afterAll, expect, test, vi } from 'vitest';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const PAGES = ['docs/REFERENCE.md', 'docs/guide/getting-started.md'];
+const dir = join(root, 'test/.reference');
 
 interface Example { page: string; code: string; line: number; planned: boolean }
 
@@ -39,28 +43,22 @@ test('the reference has examples, and marks the planned ones', () => {
   expect(all.some((e) => e.planned)).toBe(true);
 });
 
-test('every example of built API typechecks against src/', () => {
-  const dir = join(root, 'test/.reference');
-  rmSync(dir, { recursive: true, force: true });
-  mkdirSync(dir, { recursive: true });
-  const files = examples()
-    .filter((e) => !e.planned)
-    .map((e, i) => {
-      const file = join(dir, `example-${i}.ts`);
-      writeFileSync(file, `${e.code}\nexport {};\n`);
-      return { file, page: e.page, line: e.line };
-    });
-  const config = ts.readConfigFile(join(root, 'tsconfig.json'), ts.sys.readFile);
-  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root);
-  const program = ts.createProgram(files.map((f) => f.file), { ...parsed.options, noEmit: true });
-  const errors = ts
-    .getPreEmitDiagnostics(program)
-    .filter((d) => d.file && d.file.fileName.includes('/test/.reference/'))
-    .map((d) => {
-      const at = files.find((f) => f.file === d.file!.fileName)!;
-      const { line } = d.file!.getLineAndCharacterOfPosition(d.start ?? 0);
-      return `${at.page}:${at.line + line}: ${ts.flattenDiagnosticMessageText(d.messageText, '\n')}`;
-    });
-  rmSync(dir, { recursive: true, force: true });
-  expect(errors).toEqual([]);
-}, 60_000);
+rmSync(dir, { recursive: true, force: true });
+mkdirSync(dir, { recursive: true });
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+for (const [i, e] of examples().entries()) {
+  if (e.planned) continue;
+  test(`${e.page}:${e.line} strips with smaltty and runs`, async () => {
+    // smaltty rejects what isn't erasable TypeScript, with the line and column.
+    const js = strip(e.code, { fileName: `${e.page}:${e.line}` });
+    const file = join(dir, `example-${i}.js`);
+    writeFileSync(file, `${js}\nexport {};\n`);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await import(/* @vite-ignore */ pathToFileURL(file).href);
+    } finally {
+      log.mockRestore();
+    }
+  });
+}

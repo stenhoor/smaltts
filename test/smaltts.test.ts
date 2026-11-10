@@ -181,6 +181,9 @@ group('plans: relations, loads, views, explain', () => {
     expect(JSON.parse(JSON.stringify(rel))).toEqual({ r: 'select', input: { r: 'filter', input: { r: 'scan', table: 'orders' }, pred: { k: 'op', op: 'gt', args: [{ k: 'col', name: 'total' }, { k: 'lit', value: 5 }] } }, fields: [['id', { k: 'col', name: 'id' }]] });
   });
 
+  // Compile-time checks: each @ts-expect-error line must be a type error. No checker runs them yet: smaltts has no
+  // typescript dependency (owner's decision, ADR 0023), and smaltty's checker will cover smaltts (MILESTONES.md).
+  // Until then this test only builds the relations at run time.
   test('names are checked at compile time', () => {
     // @ts-expect-error: orders has no column named totl
     scan(orders).filter((o) => o.totl.gt(5));

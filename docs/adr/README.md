@@ -9,4 +9,4 @@ number after the highest in any repository, open PRs included.
 
 | Record | Status |
 |---|---|
-| [ADR 0023: smaltts, a thin typed language for smaltdb](0023-the-smaltts-language.md) | Proposed |
+| [ADR 0023: smaltts, a thin typed language for smaltdb](0023-the-smaltts-language.md) | Accepted |
