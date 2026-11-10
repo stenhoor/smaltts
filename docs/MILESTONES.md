@@ -30,9 +30,11 @@ Size: L, in smaltty (its milestone 7, the checker trial), with the owner's decis
 smaltts in its scope as well as smaltdf.
 
 - smaltty's checker reads smaltts's `.d.ts` as it reads smaltdf's, and checks calls into smaltts: unknown methods
-  and properties, argument types and counts, column names in row callbacks.
-- **Done when:** `npm run check` runs smaltty's checker over `src/`, `test/` and the reference's examples, the
-  compile-time tests' `@ts-expect-error` lines are errors, and it reports nothing tsc wouldn't.
+  and properties, argument types and counts, column names and types in row callbacks (which need its mapped,
+  conditional and template-literal types). Checking smaltts's own source is not in scope.
+- **Done when:** `npm run check` runs smaltty's checker over `test/` and the reference's examples, the compile-time
+  tests' `@ts-expect-error` lines are reported, and it reports nothing tsc wouldn't (smaltty's milestone 7,
+  stenhoor/smaltty#4 records the scope).
 
 ## 1. Re-base on smaltdb 0.9.0
 
