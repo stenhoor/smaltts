@@ -28,3 +28,12 @@ test.fails('F3: a Date in a date column is stored as its day', () => {
   db.queryPlan({ kind: 'write', plan: P.append('t', P.fromColumns([[new Date('2026-11-10T00:00:00Z')]], ['date']), [0]) });
   expect(db.queryPlan(P.scan('t', [0])).rows).toEqual([['2026-11-10']]);
 });
+
+// F4: ALTER TABLE cannot rename a columnar table ("ALTER TABLE is not supported for columnar table … yet"), so
+// smaltts rebuilds and swap-loads columnar tables through a row-storage staging table instead of renaming.
+test.fails('F4: a columnar table can be renamed', () => {
+  const db = Database.openMemory();
+  db.queryPlan({ kind: 'schema', op: { op: 'createTable', temp: false, ifNotExists: false, table: { name: 't', storage: 'columnar', columns: [columnOf('INTEGER')], keys: [], checks: [], foreignKeys: [] } } });
+  db.queryPlan({ kind: 'schema', op: { op: 'alterTable', table: 't', action: { kind: 'renameTable', newName: 'u' } } });
+  expect(db.catalog.table('u')?.storage).toBe('columnar');
+});

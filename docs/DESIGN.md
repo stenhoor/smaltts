@@ -333,6 +333,14 @@ declared columns or types), and then lists the view's dependents as affected. Th
 table rebuilds (section 6). The table and the conversions belong to the engine (E10), so smaltql and smaltts give the
 same verdicts and apply the same conversions.
 
+**In rebuilds today** (`src/conversions.ts`, milestone 3): the engine's `append` copies a column's run-time value as
+it is, so an integer under a temporal type is copied as that integer (a `date`'s day count would become a
+`datetime`'s µs). A rebuild therefore converts each column whose type changes with the engine's cast for the pair
+(`cast_text`, `cast_datetime`, `cast_integer_strict`, …), and the pair's entry gives the step's data loss. A pair with
+no conversion (a `date` to a `duration`, a list's element type) is an error in the change set: drop the column and add
+a new one, or convert the values in a load. Every lossless entry is checked on real values (`test/diff.test.ts`).
+smaltts keeps this table until the engine publishes its own (E10).
+
 ### 8.4 Materialized views
 
 A materialized view stores its rows in columns fixed when it is created: a refresh after its relation's shape
@@ -420,6 +428,7 @@ Status against smaltdb `9cd575c` (2026-11-08). Most of the first round is in the
 | **E8** | Change capture; resumable rebuilds | open; the roadmap's sync groundwork (before the sync plugin) |
 | **E9** | A materialized-view refresh that adapts its stored columns | open |
 | **F2** | bug | Values from columns read text in the result format for `date`, `time` and `datetime` but not for `duration` (ADR 0019 §5: text in the result format parses). | Writing a `duration` from its text. Pinned by a `test.fails` (`test/engine-findings.test.ts`). |
+| **F4** | gap | ALTER TABLE cannot rename a columnar table (`not supported for columnar table … yet`). smaltts rebuilds and swap-loads columnar tables through a row-storage staging table (two copies) instead of renaming. | Rebuilds and swap loads of columnar tables. Pinned by a `test.fails`. |
 | **F3** | bug | A JavaScript `Date` in a `date` column of values is taken as a `datetime` (µs), so it stores a day millions of years away. smaltts gives a `date` column the ISO day text instead, an input form the engine documents. | `Date`s into `date` columns. Pinned by a `test.fails`. |
 | **E10** | View interfaces in the engine: typed column lists, the conversion table, dependents checked after every DDL (refusing drops and recreation under an interface unless cascaded) | open; the largest, and the one section 8 depends on |
 

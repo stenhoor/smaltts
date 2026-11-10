@@ -47,17 +47,21 @@ group('schema: desired state, diff, apply', () => {
     expect((await db.diff(v2)).steps).toEqual([]);
   });
 
-  test('a type change is a rebuild; the default policy refuses possible data loss, and the rows survive', async () => {
+  test('a type change is a rebuild, classified by the conversion table; the default policy refuses possible loss', async () => {
     const db = await fresh();
-    await db.load(orders, [{ customerId: 1, total: 10 }, { customerId: 2, total: 12 }]);
-    const v2 = { tables: [customers, table('orders', { id: int().primaryKey(), customerId: int().notNull().indexed(), total: text().notNull() })] };
-    const changes = await db.diff(v2);
+    await db.load(orders, [{ customerId: 1, total: 10.5 }, { customerId: 2, total: 12 }]);
+    // REAL -> TEXT is lossless: every real has exact text.
+    const asText = { tables: [customers, table('orders', { id: int().primaryKey(), customerId: int().notNull().indexed(), total: text().notNull() })] };
+    expect((await db.diff(asText)).steps.map((s) => [s.action, s.impact, s.dataLoss])).toEqual([['rebuildTable', 'rewrite', 'none']]);
+    // REAL -> INTEGER may lose the fraction: the default policy refuses it.
+    const asInt = { tables: [customers, table('orders', { id: int().primaryKey(), customerId: int().notNull().indexed(), total: int().notNull() })] };
+    const changes = await db.diff(asInt);
     expect(changes.steps.map((s) => [s.action, s.impact, s.dataLoss])).toEqual([['rebuildTable', 'rewrite', 'possible']]);
-    expect(describe(changes)).toContain('total: type REAL → TEXT');
+    expect(describe(changes)).toContain('total: type REAL → INTEGER');
     await expect(db.apply(changes)).rejects.toThrow(/policy refuses/);
     await db.apply(changes, { allowDataLoss: 'possible' });
-    expect(await db.rows(scan('orders').pick('total'))).toEqual([{ total: '10' }, { total: '12' }]);
-    expect((await db.diff(v2)).steps).toEqual([]);
+    expect(await db.rows(scan('orders').pick('total'))).toEqual([{ total: 10 }, { total: 12 }]);
+    expect((await db.diff(asInt)).steps).toEqual([]);
   });
 
   test('tables not in the desired schema are reported, and dropped only with prune', async () => {

@@ -65,9 +65,12 @@ defaults and foreign keys (in review). The 500-column measurement waits for smal
 
 ## 3. Diff, change sets and history, complete
 
-Size: L.
+Size: L. Status: done, 2026-11-10: every spec field compared (CHECKs, foreign keys and defaults read from
+`information_schema` until the engine's catalog lists them), rebuilds converted and classified by the conversion
+table, row and columnar tables (`test/diff.test.ts`). Gate A is next.
 
-- **smaltdb first (S):** the catalog lists foreign keys, CHECKs and default values (E1's remainder).
+- **smaltdb (S), no longer first:** the catalog listing foreign keys, CHECKs and default values (E1's remainder) would
+  replace the `information_schema` reads; milestone 3 did not wait for it.
 - The differ compares every spec field; the conversion table of DESIGN.md 8.3, for every type, classifies rebuilds.
 - `apply`: policies on impact and data loss, one transaction, the history table with checksums.
 - **Done when:** for every spec field, a change produces the expected step and class; diffing any database against
@@ -164,7 +167,7 @@ Size: M. Needs smaltdb's 0.9.0 publish.
 | — | smaltty's checker covers smaltts | L (smaltty) | smaltty's own milestones |
 | 1 | Re-base | M | done (2026-11-10) |
 | 2 | Types in specs | M | done (2026-11-10) |
-| 3 | Diff complete | L | 1, smaltdb catalog PR (S) |
+| 3 | Diff complete | L | done (2026-11-10) |
 | 4 | Saved change sets | S–M | gate A |
 | 5 | Typed plans | M | 1 |
 | 6 | Views | M | 3, 5; part 2 on smaltdb E10 (L); gate B |
