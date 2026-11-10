@@ -52,8 +52,8 @@ Size: M. Needs milestone 0. Status: done, 2026-11-10: pinned to smaltdb `1ce660a
 
 ## 2. Specs with the engine's types
 
-Size: M. Status: in progress: the types, values in and out, and inference in review; CHECKs, computed defaults and
-foreign keys next.
+Size: M. Status: done, 2026-11-10: the types, values in and out and inference (stenhoor/smaltts#7); CHECKs, computed
+defaults and foreign keys (in review). The 500-column measurement waits for smaltty's checker.
 
 - `bool()`, `date()`, `datetime({ zone? })`, `time()`, `duration()`, `list(…)`, `struct({…})`; CHECKs and defaults
   as plan expressions; foreign keys.
@@ -163,7 +163,7 @@ Size: M. Needs smaltdb's 0.9.0 publish.
 | 0 | Outside code | S | done (2026-11-10) |
 | — | smaltty's checker covers smaltts | L (smaltty) | smaltty's own milestones |
 | 1 | Re-base | M | done (2026-11-10) |
-| 2 | Types in specs | M | 1 |
+| 2 | Types in specs | M | done (2026-11-10) |
 | 3 | Diff complete | L | 1, smaltdb catalog PR (S) |
 | 4 | Saved change sets | S–M | gate A |
 | 5 | Typed plans | M | 1 |

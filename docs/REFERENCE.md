@@ -106,10 +106,28 @@ Every column is nullable unless `.notNull()` or `.primaryKey()`. Modifiers:
 | `.collate(c)` | `binary` (default), `nocase` or `rtrim`. | Prototype |
 | `.default(value)` | A constant default; makes the column optional in `$insert`. | Prototype |
 | `.renamedFrom(name)` | The column's previous name: the differ renames instead of dropping and adding. | Prototype |
-| `.check(pred)`, `.defaultExpr(expr)`, `.references(column, actions)` | CHECK, a computed default, a foreign key. | Planned (milestone 2) |
+| `.check(pred, name?)` | A CHECK on this column: `pred` receives the column (`int().check((n) => n.gt(0), 'positive')`). | Prototype |
+| `.defaultExpr(expr)` | A computed default: an expression over no columns, evaluated for each row written (`fn.random()`); makes the column optional in `$insert`. | Prototype |
+| `.references(table, column?, { onDelete?, onUpdate?, name? })` | A foreign key from this column to `column` of `table` (absent: its primary key). The engine enforces foreign keys by default. | Prototype |
+| `table(…, { checks: (row) => … })` | CHECKs over the row: a list, or named (`{ affordable: row.price.lte(1000) }`). | Prototype |
+
+```ts
+import { fn, int, real, table, text } from '@smaltworks/smaltts';
+
+const customers = table('customers', { id: int().primaryKey(), name: text().notNull() });
+const orders = table('orders', {
+  id: int().primaryKey(),
+  customerId: int().notNull().references(customers, 'id', { onDelete: 'CASCADE' }),
+  qty: int().notNull().check((q) => q.gt(0), 'qty_positive'),
+  price: real().notNull(),
+  priority: int().defaultExpr(fn.abs(-5)),
+}, { checks: (r) => ({ affordable: r.price.lte(1000) }) });
+```
 
 An index spec is `{ name, columns: [{ column, desc?, collation? }], unique? }`; a foreign key spec is
-`{ columns, table, refColumns?, onDelete?, onUpdate? }`.
+`{ name?, columns, table, refColumns?, onDelete?, onUpdate? }`; a CHECK spec is `{ name?, expr }`, its expression as
+JSON (`ExprNode`). CHECKs and computed defaults are stored with their expression's JSON as their text, so they are read
+back exactly; CHECKs written in another language are not read into specs.
 
 ## Catalog
 
@@ -124,12 +142,11 @@ const tables = catalog.tables.map((t) => t.name);
 
 | | | |
 |---|---|---|
-| `db.catalog({ fresh? })` | The database as specs, from the engine's catalog API: `tables`, `views` (`{ name, materialized, language, definition }`), `table(name)` (tables and materialized views), `view(name)` (a smaltts view's relation), `foreignView(name)` (another language's view's column names). Cached until a change; `fresh` reads again. | Prototype (default values from `information_schema` until the catalog lists them) |
+| `db.catalog({ fresh? })` | The database as specs, from the engine's catalog API: `tables`, `views` (`{ name, materialized, language, definition }`), `table(name)` (tables and materialized views), `view(name)` (a smaltts view's relation), `foreignView(name)` (another language's view's column names). Cached until a change; `fresh` reads again. | Prototype (defaults, CHECKs and foreign keys from `information_schema` until the catalog lists them) |
 | `specOfCatalogTable(table)` | One of the engine's catalog tables (`CatalogTable`) as a spec. | Prototype |
 | `readCatalog(backend)` | The same, from a `Backend`. | Prototype |
 
-Reading a database and diffing it against its own catalog gives no steps. Foreign keys, CHECKs and default values join
-the comparison when the engine's catalog lists them (planned, milestone 3).
+Reading a database and diffing it against its own catalog gives no steps, constraints and computed defaults included.
 
 ## Change sets
 
@@ -165,7 +182,7 @@ dataLoss, reason, statements }`, where `statements` are the engine statements it
 | `dropColumn` | `rewrite` | `certain` |
 | `createIndex` | `build` | `none` |
 | `dropIndex` | `metadata` | `none` |
-| `rebuildTable` (a change the engine can't make in place: type, nullability, collation, default, keys, storage, column order) | `rewrite` | `none`, `possible` or `certain`, by the conversion table of [DESIGN.md 8.3](DESIGN.md#_8-3-type-changes-decided-by-types-never-by-data), never by the data |
+| `rebuildTable` (a change the engine can't make in place: type, nullability, collation, default, keys, CHECKs, foreign keys, storage, column order, or renaming a column a CHECK or computed default reads) | `rewrite` | `none`, `possible` or `certain`, by the conversion table of [DESIGN.md 8.3](DESIGN.md#_8-3-type-changes-decided-by-types-never-by-data), never by the data |
 | `dropTable` (with `prune`) | `metadata` | `certain` |
 
 **`ApplyPolicy`:** `{ allowDataLoss?: 'none' | 'possible' | 'certain', maxImpact?: Impact, label?: string }`.

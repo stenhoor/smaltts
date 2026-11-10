@@ -9,7 +9,8 @@ import { type Catalog, readCatalog } from './catalog.js';
 import { type Applied, type ApplyPolicy, type ChangeSet, type DiffOptions, apply, diff } from './changes.js';
 import { LANGUAGE, type ViewSource } from './source.js';
 import { type Cols, type Compiled, Expr, type Field, Rel, compileRel, expr } from './rel.js';
-import { type SchemaSpec, type TableSpec, type Value, columnIndex, columnPlanType, toIndexDef, toTableDef } from './spec.js';
+import { toIndexDef, toTableDef } from './ddl.js';
+import { type SchemaSpec, type TableSpec, type Value, columnIndex, columnPlanType } from './spec.js';
 
 /** How a load writes into its target. */
 export type LoadMode =

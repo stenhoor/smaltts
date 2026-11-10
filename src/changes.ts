@@ -15,7 +15,8 @@ import type { PlanStatementInput } from 'smaltdb/plan';
 import * as P from 'smaltdb/plan';
 import type { Backend } from './backend.js';
 import { type Catalog, readCatalog } from './catalog.js';
-import { type ColumnSpec, type IndexSpec, type SchemaSpec, type TableSpec, columnIndex, toColumnDef, toIndexDef, toTableDef } from './spec.js';
+import { toColumnDef, toIndexDef, toTableDef } from './ddl.js';
+import { type CheckSpec, type ColumnSpec, type ForeignKeySpec, type IndexSpec, type SchemaSpec, type TableSpec, columnIndex } from './spec.js';
 
 /** How much a step costs and disrupts, from least to most. */
 export type Impact = 'metadata' | 'instant' | 'build' | 'rewrite';
@@ -149,6 +150,17 @@ function tableSteps(old: TableSpec<any>, want: TableSpec<any>, diagnostics: Diag
   }
   if (!sameKey(old.primaryKey?.columns, want.primaryKey?.columns)) rebuild.push('the primary key changes');
   if (!sameKeys(old.unique ?? [], want.unique ?? [])) rebuild.push('unique keys change');
+  // Constraints read back with the old column names: compare them as they read after the table's renames.
+  const renamed = new Map([...matched].filter(([c, p]) => p.name !== c.name).map(([c, p]) => [p.name.toLowerCase(), c.name]));
+  if (!sameChecks(old.checks ?? [], want.checks ?? [], renamed)) rebuild.push('CHECKs change');
+  // A rename in place leaves a CHECK's or computed default's text with the old name (a table without source text has
+  // no language to edit it), so renaming a column one of them reads is a rebuild, which writes the new text.
+  const reads = (n: unknown, name: string) => JSON.stringify(n).toLowerCase().includes(`{"k":"col","name":${JSON.stringify(name.toLowerCase())}}`);
+  for (const [from, to] of renamed) {
+    const readers = [...(old.checks ?? []).map((c) => c.expr), ...old.columns.map((c) => c.defaultExpr).filter((e) => e !== undefined)];
+    if (readers.some((e) => reads(e, from))) rebuild.push(`${to}: renamed from ${from}, which a CHECK or computed default reads`);
+  }
+  if (!sameForeignKeys(old.foreignKeys ?? [], want.foreignKeys ?? [], renamed)) rebuild.push('foreign keys change');
   if ((old.storage ?? 'row') !== (want.storage ?? 'row')) rebuild.push(`storage changes to ${want.storage ?? 'row'}`);
   // Added columns must come after the existing ones for an in-place ADD COLUMN.
   // Dropping and adding in place leaves the kept columns in their old order, followed by the added ones.
@@ -193,8 +205,38 @@ function tableSteps(old: TableSpec<any>, want: TableSpec<any>, diagnostics: Diag
   for (const ix of want.indexes ?? []) {
     if (!(old.indexes ?? []).some((x) => same(x.name, ix.name))) steps.push(createIndexStep(want, ix, `${ix.name} is not in the database`));
   }
-  if ((want.foreignKeys ?? []).length > 0) diagnostics.push({ level: 'info', object: want.name, message: 'foreign keys are not compared yet (the catalog does not read them back)' });
   return steps;
+}
+
+/** An expression's JSON with its column names renamed (`from` lower-case), for comparing constraints. */
+function exprKey(n: unknown, renamed: ReadonlyMap<string, string>): string {
+  return JSON.stringify(n, (k, v) => (k === 'name' && typeof v === 'string' && renamed.has(v.toLowerCase()) ? renamed.get(v.toLowerCase()) : v));
+}
+
+/** The same CHECKs: by expression, and by name where the desired one is named (the engine names the others). */
+function sameChecks(have: readonly CheckSpec[], want: readonly CheckSpec[], renamed: ReadonlyMap<string, string>): boolean {
+  if (have.length !== want.length) return false;
+  const left = have.map((c) => exprKey(c.expr, renamed));
+  return want.every((w) => {
+    const i = left.indexOf(exprKey(w.expr, new Map()));
+    if (i < 0 || (w.name && have[i]!.name?.toLowerCase() !== w.name.toLowerCase())) return false;
+    left[i] = '';
+    return true;
+  });
+}
+
+/** The same foreign keys: columns, parent, actions, and parent columns where the desired one names them. */
+function sameForeignKeys(have: readonly ForeignKeySpec[], want: readonly ForeignKeySpec[], renamed: ReadonlyMap<string, string>): boolean {
+  if (have.length !== want.length) return false;
+  const key = (f: ForeignKeySpec, map: ReadonlyMap<string, string>, refs: boolean) =>
+    JSON.stringify([f.columns.map((c) => (map.get(c.toLowerCase()) ?? c).toLowerCase()), f.table.toLowerCase(), f.onDelete ?? 'NO ACTION', f.onUpdate ?? 'NO ACTION', refs ? (f.refColumns ?? []).map((c) => c.toLowerCase()) : null]);
+  const left = [...have];
+  return want.every((w) => {
+    const i = left.findIndex((h) => h && key(h, renamed, !!w.refColumns) === key(w, new Map(), !!w.refColumns) && (!w.name || h.name?.toLowerCase() === w.name.toLowerCase()));
+    if (i < 0) return false;
+    left.splice(i, 1);
+    return true;
+  });
 }
 
 /** A full list or struct type, compared without regard to spacing or case. */
@@ -206,6 +248,7 @@ function columnChange(prev: ColumnSpec, c: ColumnSpec): string | undefined {
   if (!!prev.notNull !== !!c.notNull) return c.notNull ? 'becomes NOT NULL' : 'becomes nullable';
   if ((prev.collation ?? 'binary') !== (c.collation ?? 'binary')) return `collation ${prev.collation ?? 'binary'} → ${c.collation ?? 'binary'}`;
   if (JSON.stringify(prev.default ?? null) !== JSON.stringify(c.default ?? null)) return 'default changes';
+  if (JSON.stringify(prev.defaultExpr ?? null) !== JSON.stringify(c.defaultExpr ?? null)) return 'default changes';
   return undefined;
 }
 
