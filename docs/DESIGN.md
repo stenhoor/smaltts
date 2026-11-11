@@ -428,9 +428,9 @@ Status against smaltdb `9cd575c` (2026-11-08). Most of the first round is in the
 | **E7** | Types and behaviour-named operations | **done**: `bool` and NaN (0018), dates and times (0019), lists and structs (0020), behaviour names (0016 §1). |
 | **E8** | Change capture; resumable rebuilds | open; the roadmap's sync groundwork (before the sync plugin) |
 | **E9** | A materialized-view refresh that adapts its stored columns | open |
-| **F2** | bug (stenhoor/smaltdb#191) | Values from columns read text in the result format for `date`, `time` and `datetime` but not for `duration` (ADR 0019 §5: text in the result format parses). | Writing a `duration` from its text. Pinned by a `test.fails` (`test/engine-findings.test.ts`). |
-| **F4** | gap (stenhoor/smaltdb#193) | ALTER TABLE cannot rename a columnar table (`not supported for columnar table … yet`). smaltts rebuilds and swap-loads columnar tables through a row-storage staging table (two copies) instead of renaming. | Rebuilds and swap loads of columnar tables. Pinned by a `test.fails`. |
-| **F3** | bug (stenhoor/smaltdb#192) | A JavaScript `Date` in a `date` column of values is taken as a `datetime` (µs), so it stores a day millions of years away. smaltts gives a `date` column the ISO day text instead, an input form the engine documents. | `Date`s into `date` columns. Pinned by a `test.fails`. |
+| **F2** | **fixed** (stenhoor/smaltdb#196, for #191) | Values from columns read text in the result format for `date`, `time` and `datetime` but not for `duration` (ADR 0019 §5: text in the result format parses). | Writing a `duration` from its text, which smaltts does now. A plain test in `test/engine-findings.test.ts` guards it. |
+| **F4** | **fixed** (stenhoor/smaltdb#199, for #193) | ALTER TABLE could not rename a columnar table. smaltts rebuilt and swap-loaded columnar tables through a row-storage staging table (two copies). | Rebuilds and swap loads of columnar tables, now renamed into place like row tables. A plain test guards it. |
+| **F3** | **fixed** (stenhoor/smaltdb#197, for #192) | A JavaScript `Date` in a `date` column of values was taken as a `datetime` (µs), a day millions of years away. smaltts gave the ISO day text instead. | `Date`s into `date` columns, now given as they are. A plain test guards it. |
 | **E10** | View interfaces in the engine (stenhoor/smaltdb#188): typed column lists, the conversion table, dependents checked after every DDL (refusing drops and recreation under an interface unless cascaded) | open; the largest, and the one section 8 depends on |
 
 The engine also gained what smaltts did not ask for and now uses: errors with an `origin` and structured fields,
@@ -475,7 +475,7 @@ Static checks run with smaltty's checker (`test/checker.test.ts`): the tests and
 errors, and every compile-time test (`@ts-expect-error`) is found. Typed interfaces wait on the engine (E10,
 milestone 6 part 2), and the client path is untested
 (milestone 10). Its dev dependencies were settled by the owner on 2026-11-10 (milestone 0): no `typescript`; smaltty,
-Node's types and vitest for development and tests. Engine findings F2–F4 are open, each pinned by a failing test.
+Node's types and vitest for development and tests. Engine findings F2–F4 are fixed in smaltdb (#196, #197, #199) and guarded by plain tests.
 
 ## 14. Decisions and open questions
 

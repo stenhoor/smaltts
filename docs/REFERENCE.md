@@ -91,7 +91,7 @@ const copy = tableSpec({ ...orders, name: 'orders_archive', indexes: [] });
 | `date()` | `DATE` | `date` | `Date` (midnight UTC) | Prototype |
 | `datetime()` | `DATETIME` | `datetime` (µs) | `Date` (ms: µs are dropped) | Prototype; a column's default zone (`{ zone }`) is planned |
 | `time()` | `TIME` | `time` (µs) | `string` (`12:30:00`) | Prototype |
-| `duration()` | `DURATION` | `duration` (µs) | `string` (ISO 8601, `PT1H30M`) | Prototype (reads; writing its text waits on smaltdb finding F2) |
+| `duration()` | `DURATION` | `duration` (µs) | `string` (ISO 8601, `PT1H30M`) | Prototype |
 | `list(inner)` | `LIST` | `list<T>` | `T[]` | Prototype |
 | `struct({ … })` | `STRUCT` | `struct<…>` | an object | Prototype |
 
@@ -194,7 +194,7 @@ dataLoss, reason, statements }`, where `statements` are the engine statements it
 data loss `none`; pairs that can change or fail (`REAL` to `INTEGER`, `TEXT` to a number or a date, `DATETIME` to
 `DATE`) are `possible`; a pair with no conversion is an error diagnostic, and `apply` refuses the change set. A
 NOT NULL column added with no default makes a rebuild `possible` (it fails on a table with rows). Columnar tables are
-rebuilt through a row-storage staging table (smaltdb finding F4).
+rebuilt as row tables are: the new table is built beside the old one and renamed into its place.
 
 **Views over a changed table** are checked against the change set (see [Views](#views)):
 
