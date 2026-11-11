@@ -105,8 +105,12 @@ Size: M. Status: done, 2026-11-10: the relation operations (stenhoor/smaltts#10)
 ## 6. Views: reflecting and interface
 
 Size: M in smaltts; **smaltdb E10 is L** (stenhoor/smaltdb#188).
-Status: part 1 done, 2026-11-10: interface views with a column list, view sources that follow renames column by
-column, and change sets that check the views over a changed table (`test/views.test.ts`); part 2 waits on E10.
+Status: done. Part 1, 2026-11-10: interface views with a column list, view sources that follow renames column by
+column, and change sets that check the views over a changed table (`test/views.test.ts`). Part 2, 2026-11-11, after
+E10 (smaltdb ADR 0027): every new view has an interface the engine holds; smaltts reads its own views by their
+interfaces, its change sets refuse what would break one, and the same schema operations from outside smaltts (those
+smaltql's DDL maps to) are held the same way (`test/views.test.ts`, "DDL from outside smaltts"); smaltql's own tests
+cover its DDL (smaltql#66, #67). Views made before interfaces keep reflecting.
 
 - **Without E10:** reflecting views by default, interface views with a column list (names and order), reading views
   of other languages, the change-set warnings and errors for affected views, and the recreate step for reflecting

@@ -409,6 +409,11 @@ export interface Resolver {
   view?(name: string): RelNode | undefined;
   /** A view in another language that declares its columns: read by name, its columns typed `any`. */
   foreignView?(name: string): readonly string[] | undefined;
+  /**
+   * A smaltts view's interface (smaltdb ADR 0027): the columns it gave when it was made. A view inlined where it is read
+   * gives these, by these names and types, as the engine reads it; absent for a view made before interfaces.
+   */
+  viewInterface?(name: string): readonly { readonly name: string; readonly type: P.PlanType }[] | undefined;
   /** The engine's result type of a function for these argument types (the catalog's `resultType`). */
   resultType?(name: string, args: readonly P.PlanType[]): P.PlanType | undefined;
 }
@@ -457,7 +462,11 @@ function compile(n: RelNode, ctx: Ctx): { plan: P.PlanOp; fields: Field[] } {
       const t = cat.table(n.table);
       if (t) return { plan: at(P.scan(t.name, t.columns.map((_, i) => i)), 'scan'), fields: t.columns.map((c) => ({ name: c.name, type: columnPlanType(c), collation: c.collation ?? 'binary' })) };
       const view = cat.view?.(n.table);
-      if (view) return compile(view, ctx);
+      if (view) {
+        const iface = cat.viewInterface?.(n.table);
+        const out = compile(view, ctx);
+        return iface ? asInterface(out, iface) : out;
+      }
       const names = cat.foreignView?.(n.table);
       if (names) return { plan: at(P.scan(n.table, names.map((_, i) => i)), 'scan'), fields: names.map((name) => ({ name, type: 'any', collation: 'binary' })) };
       throw new Error(`scan: no table or view named ${n.table}`);
@@ -769,4 +778,22 @@ function exprIn(n: ExprNode, scopes: readonly (readonly Field[])[], ctx: Ctx): T
       return { e, type, collation: type === 'text' ? collation : 'binary' };
     }
   }
+}
+
+/**
+ * An inlined view's relation read as its interface says (smaltdb ADR 0027), as the engine reads the view: the
+ * interface's columns only (a view over every column of a table keeps the ones it had), by the interface's names, each
+ * converted to the interface's type with the engine's conversion where the relation now gives another.
+ */
+function asInterface(out: { plan: P.PlanOp; fields: Field[] }, iface: readonly { readonly name: string; readonly type: P.PlanType }[]): { plan: P.PlanOp; fields: Field[] } {
+  const same = out.fields.length === iface.length && out.fields.every((f, i) => f.name === iface[i]!.name && f.type === iface[i]!.type);
+  if (same) return out;
+  const fields = iface.map((c, i): Field => ({ name: c.name, type: c.type, collation: out.fields[i]?.collation ?? 'binary' }));
+  const exprs = iface.map((c, i): P.PlanExpr => {
+    const f = out.fields[i]!;
+    const col = P.col(0, i, f.type, f.collation);
+    const fn = f.type === c.type ? undefined : P.conversion(f.type, c.type)?.fn;
+    return fn ? P.call(fn, [col], c.type) : col;
+  });
+  return { plan: P.project(out.plan, exprs), fields };
 }
