@@ -25,3 +25,36 @@ jobs:
       - run: npm test            # includes the API reference's examples, stripped with smaltty and run
       # The docs site: fails on dead links. It deploys from main (docs.yml).
       - run: npm run docs:build
+
+  # Milestone 10: the scenarios (test/scenarios.ts) in each browser, in process and through the worker client, with the
+  # same results. As smaltdb's: Playwright's image has its browsers; Playwright itself is installed globally, pinned with
+  # the image (the owner's yes, 2026-11-11), never in package.json.
+  browser:
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --user 1001
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    env:
+      PLAYWRIGHT_VERSION: 1.64.1
+      NPM_CONFIG_PREFIX: /tmp/npm-global
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .cache/packed/*.tgz
+            .cache/packed/*-files
+          key: packed-${{ hashFiles('packed.json') }}
+      - run: node scripts/fetch-packed.mjs
+      - run: npm install -g playwright@${{ env.PLAYWRIGHT_VERSION }}
+        timeout-minutes: 5
+      - run: NODE_PATH=$(npm root -g) BROWSERS=${{ matrix.browser }} npm run test:browser
