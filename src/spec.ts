@@ -75,6 +75,10 @@ export interface TableSpec<Row = Record<string, Value>> {
 /** A desired schema: the set of objects a toolchain manages. Objects not in it are left alone unless asked. */
 export interface SchemaSpec {
   readonly tables: readonly TableSpec<any>[];
+  /** Connections (milestone 9). Left out: the database's are left alone. */
+  readonly connections?: readonly import('./plugins.js').ConnectionSpec[];
+  /** External tables (milestone 9). Left out: the database's are left alone. */
+  readonly externals?: readonly import('./plugins.js').ExternalTableSpec<any>[];
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -196,7 +200,7 @@ export function struct<const F extends Columns>(fields: F): ColumnBuilder<RowOf<
   return new ColumnBuilder({ type: 'STRUCT', planType: `struct<${parts.join(', ')}>` });
 }
 
-type Columns = Record<string, ColumnBuilder<any, boolean, boolean>>;
+export type Columns = Record<string, ColumnBuilder<any, boolean, boolean>>;
 type ValueOf<C> = C extends ColumnBuilder<infer T, infer N, boolean> ? (N extends true ? T | null : T) : never;
 /** The row type of a set of column builders. */
 export type RowOf<C extends Columns> = { [K in keyof C]: ValueOf<C[K]> };

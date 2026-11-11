@@ -19,7 +19,8 @@ import { conversion } from './conversions.js';
 import { toColumnDef, toIndexDef, toTableDef } from './ddl.js';
 import { type Field, type RelNode, compileRel } from './rel.js';
 import { LANGUAGE, type ViewSource } from './source.js';
-import { type CheckSpec, type ColumnSpec, type ForeignKeySpec, type IndexSpec, type SchemaSpec, type StorageType, type TableSpec, columnIndex, columnPlanType } from './spec.js';
+import type { ConnectionSpec, ExternalTableSpec } from './plugins.js';
+import { type CheckSpec, type ColumnSpec, type ForeignKeySpec, type IndexSpec, type SchemaSpec, type TableSpec, type Value, columnIndex, columnPlanType } from './spec.js';
 import { renameColumnIn, renameTableIn } from './views.js';
 
 /** How much a step costs and disrupts, from least to most. */
@@ -30,7 +31,9 @@ export type DataLoss = 'none' | 'possible' | 'certain';
 const LOSSES: readonly DataLoss[] = ['none', 'possible', 'certain'];
 
 export interface Step {
-  readonly action: 'createTable' | 'dropTable' | 'renameTable' | 'addColumn' | 'dropColumn' | 'renameColumn' | 'rebuildTable' | 'createIndex' | 'dropIndex' | 'replaceView';
+  readonly action:
+    | 'createTable' | 'dropTable' | 'renameTable' | 'addColumn' | 'dropColumn' | 'renameColumn' | 'rebuildTable' | 'createIndex' | 'dropIndex' | 'replaceView'
+    | 'createConnection' | 'dropConnection' | 'replaceConnection' | 'createExternalTable' | 'dropExternalTable' | 'replaceExternalTable';
   /** The object the step changes. */
   readonly object: string;
   readonly impact: Impact;
@@ -75,7 +78,7 @@ export async function diff(current: Backend | Catalog, desired: SchemaSpec, opti
 }
 
 /** What the differ reads of the database's views: the catalog's. */
-export type ViewsOf = Pick<Catalog, 'views' | 'table' | 'resultType'>;
+export type ViewsOf = Pick<Catalog, 'views' | 'table' | 'resultType'> & Partial<Pick<Catalog, 'connections' | 'externals'>>;
 
 /**
  * `diff` on specs alone, with no database. With `views` (a catalog's), each view that reads a changed table is checked
@@ -113,8 +116,9 @@ export function diffCatalog(have: readonly TableSpec<any>[], desired: SchemaSpec
   }
 
   if (views) steps.push(...viewSteps(views, have, desired, options, steps, diagnostics));
+  steps.push(...externalSteps(views?.connections ?? [], views?.externals ?? [], desired, options, diagnostics));
 
-  const order: Step['action'][] = ['renameTable', 'dropIndex', 'renameColumn', 'dropColumn', 'addColumn', 'rebuildTable', 'createTable', 'createIndex', 'dropTable', 'replaceView'];
+  const order: Step['action'][] = ['dropExternalTable', 'dropConnection', 'createConnection', 'replaceConnection', 'replaceExternalTable', 'createExternalTable', 'renameTable', 'dropIndex', 'renameColumn', 'dropColumn', 'addColumn', 'rebuildTable', 'createTable', 'createIndex', 'dropTable', 'replaceView'];
   steps.sort((a, b) => order.indexOf(a.action) - order.indexOf(b.action));
   for (const s of steps) {
     if (s.dataLoss === 'certain') diagnostics.push({ level: 'warning', object: s.object, message: `${s.action} loses data: ${s.reason}` });
@@ -220,6 +224,92 @@ function viewSteps(views: ViewsOf, have: readonly TableSpec<any>[], desired: Sch
     if (rewrite) out.push(replaceViewStep(v, { ...source, rel }, v.materialized ? 'its stored columns change' : 'it reads a column a rebuild renames'));
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Connections and external tables (milestone 9): created, dropped (with prune) or made again when they change. Their
+// data is outside the database, so no step loses any.
+
+/** Options compared by name (any case) and value. */
+function sameOptions(a: Readonly<Record<string, Value>>, b: Readonly<Record<string, Value>>): boolean {
+  const norm = (o: Readonly<Record<string, Value>>) =>
+    JSON.stringify(Object.entries(o).map(([k, v]) => [k.toLowerCase(), typeof v === 'bigint' ? `${v}n` : v instanceof Uint8Array ? [...v] : v]).sort(([x], [y]) => (String(x) < String(y) ? -1 : 1)));
+  return norm(a) === norm(b);
+}
+
+/** Declared columns compared by name and type; a spec without columns takes the source's. */
+function sameColumns(want: ExternalTableSpec<any>, have: ExternalTableSpec<any>): boolean {
+  if (want.columns.length === 0) return true;
+  return want.columns.length === have.columns.length && want.columns.every((c, i) => same(c.name, have.columns[i]!.name) && columnPlanType(c) === columnPlanType(have.columns[i]!));
+}
+
+const connectionOf = (x: ExternalTableSpec<any>): string | undefined => {
+  const c = Object.entries(x.options).find(([k]) => k.toLowerCase() === 'connection')?.[1];
+  return typeof c === 'string' ? c : undefined;
+};
+
+const createConnectionOp = (c: ConnectionSpec): PlanStatementInput => ({ kind: 'schema', op: { op: 'createConnection', name: c.name, ifNotExists: false, options: { ...c.options } } });
+const dropOp = (objectType: 'connection' | 'external table', name: string, ifExists = false): PlanStatementInput => ({ kind: 'schema', op: { op: 'drop', objectType, name, ifExists } });
+const createExternalOp = (x: ExternalTableSpec<any>): PlanStatementInput => ({
+  kind: 'schema',
+  op: { op: 'createExternalTable', name: x.name, ifNotExists: false, columns: x.columns.map((c) => ({ name: c.name, declaredType: toColumnDef(c).declaredType, constrained: false })), options: { ...x.options } },
+});
+
+function externalSteps(haveConns: readonly ConnectionSpec[], haveExts: readonly ExternalTableSpec<any>[], desired: SchemaSpec, options: DiffOptions, diagnostics: Diagnostic[]): Step[] {
+  const steps: Step[] = [];
+  const step = (action: Step['action'], object: string, reason: string, statements: PlanStatementInput[]): Step => ({ action, object, impact: 'metadata', dataLoss: 'none', reason, statements });
+  const wantExts = desired.externals;
+  const wantConns = desired.connections;
+  const remadeExts = new Set<string>();
+  if (wantConns) {
+    for (const c of wantConns) {
+      const old = haveConns.find((h) => same(h.name, c.name));
+      if (!old) steps.push(step('createConnection', c.name, `${c.name} is not in the database`, [createConnectionOp(c)]));
+      else if (!sameOptions(old.options, c.options)) {
+        // The engine refuses to drop a connection an external table reads: those are made again around it.
+        const users = haveExts.filter((x) => same(connectionOf(x) ?? '', c.name));
+        for (const u of users) remadeExts.add(u.name.toLowerCase());
+        const again = users.map((u) => wantExts?.find((w) => same(w.name, u.name)) ?? u);
+        steps.push(
+          step('replaceConnection', c.name, `its options change${users.length ? `; the external tables that read through it are made again (${users.map((u) => u.name).join(', ')})` : ''}`, [
+            ...users.map((u) => dropOp('external table', u.name)),
+            dropOp('connection', c.name),
+            createConnectionOp(c),
+            ...again.map(createExternalOp),
+          ]),
+        );
+      }
+    }
+    for (const h of haveConns) {
+      if (wantConns.some((c) => same(c.name, h.name))) continue;
+      if (options.prune) steps.push(step('dropConnection', h.name, `${h.name} is not in the desired schema`, [dropOp('connection', h.name)]));
+      else diagnostics.push({ level: 'info', object: h.name, message: 'a connection in the database but not in the desired schema: left alone (diff with prune to drop it)' });
+    }
+  }
+  if (wantExts) {
+    for (const x of wantExts) {
+      const old = haveExts.find((h) => same(h.name, x.name));
+      if (!old) steps.push(step('createExternalTable', x.name, `${x.name} is not in the database`, [createExternalOp(x)]));
+      else if (remadeExts.has(x.name.toLowerCase())) continue; // made again with its connection
+      else if (!sameOptions(old.options, x.options) || !sameColumns(x, old)) {
+        steps.push(step('replaceExternalTable', x.name, !sameOptions(old.options, x.options) ? 'its options change' : 'its columns change', [dropOp('external table', x.name), createExternalOp(x)]));
+      }
+    }
+    for (const h of haveExts) {
+      if (wantExts.some((x) => same(x.name, h.name))) continue;
+      if (options.prune) steps.push(step('dropExternalTable', h.name, `${h.name} is not in the desired schema`, [dropOp('external table', h.name)]));
+      else diagnostics.push({ level: 'info', object: h.name, message: 'an external table in the database but not in the desired schema: left alone (diff with prune to drop it)' });
+    }
+  }
+  // A connection the desired external tables read that neither exists nor is declared is an error the engine would
+  // give when the table is created.
+  for (const x of wantExts ?? []) {
+    const c = connectionOf(x);
+    if (c && !haveConns.some((h) => same(h.name, c)) && !(wantConns ?? []).some((w) => same(w.name, c))) {
+      diagnostics.push({ level: 'error', object: x.name, message: `reads through connection ${c}, which is neither in the database nor in the desired schema` });
+    }
+  }
+  return steps;
 }
 
 /** Drop a view and create it again with `source` (a materialized one filled again). */

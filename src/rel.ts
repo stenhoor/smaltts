@@ -12,7 +12,7 @@
 import * as P from 'smaltdb/plan';
 import { AGGREGATE, ARITY, SCALAR, type ScalarName } from './functions.js';
 import { type Cols, type ExprNode, type Truth, Expr, toNode } from './expr.js';
-import { type Collation, type StorageType, type TableSpec, type Value, columnPlanType } from './spec.js';
+import { type Collation, type ColumnSpec, type StorageType, type TableSpec, type Value, columnPlanType } from './spec.js';
 
 export { type AggOptions, type Arg, type Cols, type ExprNode, type OneColumn, type Truth, Expr, agg, and, caseWhen, col, exists, fn, lit, not, or, param, scalar } from './expr.js';
 
@@ -409,6 +409,8 @@ export interface Resolver {
   view?(name: string): RelNode | undefined;
   /** A view in another language that declares its columns: read by name, its columns typed `any`. */
   foreignView?(name: string): readonly string[] | undefined;
+  /** An external table's columns: read by name as the engine's `source` of kind `external`. */
+  external?(name: string): readonly ColumnSpec[] | undefined;
   /**
    * A smaltts view's interface (smaltdb ADR 0027): the columns it gave when it was made. A view inlined where it is read
    * gives these, by these names and types, as the engine reads it; absent for a view made before interfaces.
@@ -466,6 +468,11 @@ function compile(n: RelNode, ctx: Ctx): { plan: P.PlanOp; fields: Field[] } {
         const iface = cat.viewInterface?.(n.table);
         const out = compile(view, ctx);
         return iface ? asInterface(out, iface) : out;
+      }
+      const ext = cat.external?.(n.table);
+      if (ext) {
+        const types = ext.map(columnPlanType);
+        return { plan: at({ op: 'source', kind: 'external', name: n.table, args: [], types }, 'scan'), fields: ext.map((c, i) => ({ name: c.name, type: types[i]!, collation: 'binary' })) };
       }
       const names = cat.foreignView?.(n.table);
       if (names) return { plan: at(P.scan(n.table, names.map((_, i) => i)), 'scan'), fields: names.map((name) => ({ name, type: 'any', collation: 'binary' })) };

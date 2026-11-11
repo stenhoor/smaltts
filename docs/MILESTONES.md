@@ -146,7 +146,10 @@ Size: S in smaltts; **smaltdb E2 is M** (stenhoor/smaltdb#187).
 
 ## 9. Plugins and external data
 
-Size: M.
+Size: M. Status: done, 2026-11-12: connection and external-table specs in change sets, `definePlugin` descriptors,
+and Parquet read through `@smaltdb/parquet` into a table, both declared as specs (`test/plugins.test.ts`). The engine
+lists connections and external tables' options in its catalog for it (stenhoor/smaltdb#214). `@smaltdb/external` and
+`@smaltdb/parquet` are pinned for tests only (the owner's yes, 2026-11-11).
 
 - Connections and external tables as specs, diffed and applied like tables.
 - Plugin calls typed by descriptors: a plugin ships a smaltts module with typed methods and table functions (the
