@@ -164,7 +164,7 @@ from milestones 1–6 (`test/scenarios.ts`) give the same results in process and
 engine in a worker thread, `test/client.test.ts`) and in Chromium, Firefox and WebKit (`npm run test:browser`, CI's
 `browser` job; Playwright installed globally with the owner's yes, 2026-11-11). Pages load smaltts's TypeScript
 stripped by smaltty (`test/browser/serve.mjs`), no bundler. The scenarios found engine finding F5 (an update's input
-layout, stenhoor/smaltdb#215), pinned with a `test.fails`. Running the whole test suite through the client, rather than
+layout, fixed in stenhoor/smaltdb#215). Running the whole test suite through the client, rather than
 the scenarios, is left to milestone 11's release checks.
 
 - Everything above through the worker client, and a worker entry with smaltts's language registered
