@@ -142,7 +142,7 @@ const tables = catalog.tables.map((t) => t.name);
 
 | | | |
 |---|---|---|
-| `db.catalog({ fresh? })` | The database as specs, from the engine's catalog API: `tables`, `views` (`{ name, materialized, language, definition }`), `table(name)` (tables and materialized views), `view(name)` (a smaltts view's relation), `foreignView(name)` (another language's view's column names). Cached until a change; `fresh` reads again. | Prototype (defaults, CHECKs and foreign keys from `information_schema` until the catalog lists them) |
+| `db.catalog({ fresh? })` | The database as specs, from the engine's catalog API: `tables`, `views` (`{ name, materialized, language, definition }`), `table(name)` (tables and materialized views), `view(name)` (a smaltts view's relation), `foreignView(name)` (another language's view's column names). Cached until a change; `fresh` reads again. | Prototype |
 | `specOfCatalogTable(table)` | One of the engine's catalog tables (`CatalogTable`) as a spec. | Prototype |
 | `readCatalog(backend)` | The same, from a `Backend`. | Prototype |
 
