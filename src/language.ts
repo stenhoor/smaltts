@@ -67,13 +67,34 @@ export const smalttsLanguage: SmaltLanguage = {
   sourceEditor: {
     renameTable: (text, oldName, newName) => editView(text, (rel) => renameTableIn(rel, oldName, newName)),
     renameColumn: (text, table, oldName, newName) => editView(text, (rel) => renameColumnIn(rel, table, oldName, newName)),
-    renameColumnInExpr: unchanged,
+    // A CHECK's text is its expression as JSON (src/ddl.ts): the column is renamed where the expression reads it.
+    renameColumnInExpr: (text, _table, oldName, newName) => renameColumnInExprText(text, oldName, newName),
     // smaltts defines tables without source text, so these never reach a smaltts source.
     addColumn: unchanged,
     dropColumn: unchanged,
     externalTable: (name, columns, options) => JSON.stringify({ kind: 'externalTable', name, columns, options }),
   },
 };
+
+/** A smaltts expression's JSON text with column `oldName` renamed; other text unchanged. */
+function renameColumnInExprText(text: string, oldName: string, newName: string): string {
+  if (!text.startsWith('{"k":')) return text;
+  const old = oldName.toLowerCase();
+  const walk = (n: unknown): unknown => {
+    if (Array.isArray(n)) return n.map(walk);
+    if (n === null || typeof n !== 'object') return n;
+    const o = n as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(o)) out[k] = walk(v);
+    if (o.k === 'col' && typeof o.name === 'string' && o.name.toLowerCase() === old) out.name = newName;
+    return out;
+  };
+  try {
+    return JSON.stringify(walk(JSON.parse(text)));
+  } catch {
+    return text;
+  }
+}
 
 let registered = false;
 /** Register smaltts with the engine (once; later calls do nothing). */
