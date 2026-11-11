@@ -130,7 +130,7 @@ Size: L.
   committed (per-step mode) or nothing (one transaction); and a resumed run finishes it.
 
 **Gate C (owner), with smaltfl:** what a flow holds and what smaltfl adds (schedules, dependencies, retries), before
-smaltfl starts.
+smaltfl starts. Asked on 2026-11-11: **not yet**. Milestone 7 and smaltfl wait (DESIGN.md section 14, decision 15).
 
 ## 8. Plan review
 
@@ -145,8 +145,10 @@ Size: S in smaltts; **smaltdb E2 is M** (stenhoor/smaltdb#187).
 Size: M.
 
 - Connections and external tables as specs, diffed and applied like tables.
-- Plugin calls typed by descriptors, if the owner chooses them (DESIGN.md section 14, open question 2).
-- **Done when:** a flow reads Parquet through `@smaltdb/parquet` into a table, both declared as specs.
+- Plugin calls typed by descriptors: a plugin ships a smaltts module with typed methods and table functions (the
+  owner's choice, 2026-11-11: DESIGN.md section 14, decision 14).
+- **Done when:** Parquet is read through `@smaltdb/parquet` into a table, both declared as specs (in a flow once
+  milestone 7 is built; until then through `db.load`).
 
 ## 10. The client and the browser
 
