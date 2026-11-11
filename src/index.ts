@@ -16,3 +16,4 @@ export { type Backend, type Result, type RunOptions, engineBackend, clientBacken
 export { LANGUAGE, type ViewSource } from './source.js';
 export { renameColumnIn, renameTableIn, tablesOf } from './views.js';
 export { type ChangeSetFile, type Migrated, type NamedFile, changeSetFile, parseChangeSetFile, migrateFiles } from './files.js';
+export { type ConnectionSpec, type ExternalTableSpec, type ConnectionOptions, type ExternalTableOptions, type PluginMethods, type PluginDescriptor, type PluginCalls, type DescribedTableFunction, connection, externalTable, definePlugin, methods } from './plugins.js';

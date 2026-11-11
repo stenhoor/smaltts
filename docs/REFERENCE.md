@@ -490,20 +490,41 @@ console.log(String(measured));
 ## Plugins and transactions
 
 ```ts
+import assert from 'node:assert/strict';
 import { Database } from 'smaltdb/engine';
-import { attach } from '@smaltworks/smaltts';
+import external from '@smaltdb/external';
+import parquet from '@smaltdb/parquet';
+import { attach, connection, definePlugin, externalTable, methods, real, text } from '@smaltworks/smaltts';
 
-const db = attach(Database.openMemory());
+const raw = Database.openMemory({ plugins: [external, parquet] });
+const db = attach(raw);
+
+// Connections and external tables are specs (a diff reads no file): created, left alone, made again when they change, dropped with prune.
+const lake = connection('lake', { type: 'https', url: 'https://data.example.org/' });
+const prices = externalTable('prices', { location: 'file:prices.parquet' });
+const changes = await db.diff({ tables: [], connections: [lake], externals: [prices] });
+assert.deepEqual(changes.steps.map((s) => s.action), ['createConnection', 'createExternalTable']);
+
+// A plugin, typed by its descriptor: its table functions give typed relations, its methods type `call`.
+const pq = definePlugin({ name: '@smaltdb/parquet', tableFunctions: ['read_parquet'] });
+const rel = pq.tableFunctions.read_parquet('file:prices.parquet', { sku: text(), price: real() });
+const io = definePlugin({ name: '@smaltdb/io', methods: methods<{ importCSV(table: string, csv: string): { rows: number } }>() });
+void rel;
+void io;
+
 await db.transaction(async (tx) => {
   await tx.analyze();
 });
-const io = db.plugin('@smaltdb/io');
 ```
 
 | | | |
 |---|---|---|
-| `db.plugin(name).call(method, ...args)` | Calls a plugin's method. | Prototype |
-| Typed plugin descriptors; connections and external tables as specs | | Planned (milestone 9) |
+| `connection(name, { type?, url?, credentials?, … })` | A connection spec: the engine's options for it, as `createConnection` takes them; what they mean is its type's plugin's (`@smaltdb/external`: http, s3, azure). | Prototype |
+| `externalTable(name, { location, format?, connection?, … }, columns?)` | An external table spec: its options (`connection` a name or a connection spec) and, optionally, its declared columns as column builders. Without columns, the engine reads them from the source when the table is created. `scan(name)` reads it, typed by its columns. | Prototype |
+| `SchemaSpec.connections`, `SchemaSpec.externals` | Diffed and applied like tables: created when missing, left alone (a note) or dropped with `prune` when not wanted, and made again when their options or declared columns change (`replaceConnection`, `replaceExternalTable`, data loss none: the data is outside). A connection made again takes the external tables that read through it with it. Left out of the spec, the database's are left alone. | Prototype |
+| `definePlugin({ name, methods?, tableFunctions? })` | A plugin's descriptor (DESIGN.md decision 14): `tableFunctions.<name>(args, columns, named?)` gives a relation typed by `columns`; `methods: methods<{ … }>()` types `db.plugin(descriptor).call`. smaltts depends on no plugin: a descriptor is data and types, and the engine runs the plugin. | Prototype |
+| `db.plugin(descriptor or name).call(method, ...args)` | Calls a plugin's method, typed by its descriptor's methods. | Prototype |
+| `db.catalog().connections`, `db.catalog().externals` | The database's connections and external tables, as specs. | Prototype |
 | `db.transaction(fn)` | Runs `fn` in one transaction; nested calls are savepoints (in process). | Prototype |
 
 ## The language

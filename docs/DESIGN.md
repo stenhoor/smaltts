@@ -423,6 +423,14 @@ await db.transaction(async (tx) => { await tx.load(…); await tx.apply(…); })
 `explain` returns a tree (`ExplainNode`: detail, estimated rows, measured rows, loops, time). Costs per node need the
 engine (E2).
 
+**Plugins (decision 14, milestone 9).** A plugin is described for smaltts by a descriptor, data and types only:
+`definePlugin({ name, methods: methods<{ … }>(), tableFunctions: ['read_parquet'] })`. Its table functions give
+relations typed by the columns given; its methods type `db.plugin(descriptor).call`. smaltts imports no plugin, and a
+plugin's descriptor can ship with the plugin. Connections and external tables are specs (`connection`,
+`externalTable`), diffed from the engine's catalog (its connections, and external tables' options) and applied with
+`createConnection` and `createExternalTable`; one whose options change is made again, with no data loss since the data
+is outside the database.
+
 ## 11. The engine: findings and proposals
 
 Status against smaltdb `9cd575c` (2026-11-08). Most of the first round is in the engine, through ADRs 0016–0020:

@@ -11,6 +11,7 @@ import type { RelNode } from './rel.js';
 import type { ExprNode } from './expr.js';
 import { type CheckSpec, type ColumnSpec, type ForeignKeySpec, type IndexSpec, type KeySpec, type TableSpec, type Value, tableSpec } from './spec.js';
 import { LANGUAGE, type ViewSource } from './source.js';
+import type { ConnectionSpec, ExternalTableSpec } from './plugins.js';
 
 export interface CatalogViewInfo {
   readonly name: string;
@@ -53,6 +54,11 @@ export interface Catalog {
   view(name: string): RelNode | undefined;
   /** A plain view in another language that declares its columns: its column names. */
   foreignView(name: string): readonly string[] | undefined;
+  /** Connections and external tables (milestone 9), as specs. */
+  readonly connections: readonly ConnectionSpec[];
+  readonly externals: readonly ExternalTableSpec[];
+  /** An external table's columns, as compiling reads it. */
+  external(name: string): readonly ColumnSpec[] | undefined;
   /** A smaltts view's interface (smaltdb ADR 0027), as compiling reads it. */
   viewInterface(name: string): readonly ViewInterfaceColumn[] | undefined;
   /** The engine's result type of a function for these argument types, where the backend can answer. */
@@ -120,8 +126,13 @@ export async function readCatalog(db: Backend): Promise<Catalog> {
   const tables: TableSpec[] = [];
   const stored: TableSpec[] = [];
   const views: CatalogViewInfo[] = [];
+  const externals: ExternalTableSpec[] = [];
   for (const t of data.tables) {
     if (t.schema !== 'main' || isSystem(t.name)) continue;
+    if (t.kind === 'external') {
+      externals.push({ name: t.name, columns: specOfCatalogTable(t).columns, options: { ...(t.options ?? {}) } as Record<string, Value> });
+      continue;
+    }
     const spec = specOfCatalogTable(t, extrasOf(t, data.tables));
     if (t.kind === 'table') tables.push(spec);
     else if (t.kind === 'materializedView') {
@@ -136,9 +147,13 @@ export async function readCatalog(db: Backend): Promise<Catalog> {
     views.push({ name: v.name, materialized: false, language: v.language, definition: v.text, ...(columns ? { columns } : {}), ...(v.interface ? { interface: v.interface } : v.reflects ? { reflects: true } : {}) });
   }
   const find = (n: string) => tables.find((s) => same(s.name, n)) ?? stored.find((s) => same(s.name, n));
+  const connections: ConnectionSpec[] = (data.connections ?? []).map((x) => ({ name: x.name, options: { ...x.options } as Record<string, Value> }));
   return {
     tables,
     views,
+    connections,
+    externals,
+    external: (n) => externals.find((x) => same(x.name, n))?.columns,
     table: find,
     view(n) {
       const v = data.views.find((x) => same(x.name, n));

@@ -11,6 +11,7 @@ import { type Migrated, type NamedFile, migrateFiles } from './files.js';
 import { LANGUAGE, type ViewSource } from './source.js';
 import { type Cols, type Compiled, Expr, type Field, Rel, compileRel, expr } from './rel.js';
 import { toIndexDef, toTableDef } from './ddl.js';
+import type { PluginCalls, PluginDescriptor, PluginMethods } from './plugins.js';
 import { type SchemaSpec, type TableSpec, type Value, columnIndex, columnPlanType } from './spec.js';
 
 /** How a load writes into its target. */
@@ -233,7 +234,10 @@ export class SmaltDb {
   // ----- Plugins and transactions -----
 
   /** A plugin's methods. */
-  plugin(name: string): { call(method: string, ...args: unknown[]): Promise<unknown> } {
+  plugin<M extends PluginMethods>(plugin: PluginDescriptor<M, string>): PluginCalls<M>;
+  plugin(name: string): { call(method: string, ...args: unknown[]): Promise<unknown> };
+  plugin(plugin: string | PluginDescriptor<PluginMethods, string>): { call(method: string, ...args: unknown[]): Promise<unknown> } {
+    const name = typeof plugin === 'string' ? plugin : plugin.name;
     return { call: (method, ...args) => this.backend.callPlugin(name, method, args) };
   }
   /** Run `fn` in one transaction (nested calls are savepoints on the in-process engine). */
