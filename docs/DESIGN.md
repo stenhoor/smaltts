@@ -177,9 +177,9 @@ await db.apply(changes, { allowDataLoss: 'possible' });   // runs, in one transa
 ```
 
 - **`db.catalog()`** reads tables (columns, keys, indexes, storage), views and materialized views from the engine's
-  catalog (`db.catalog` in process, `catalog()` on the client: ADR 0016 §7), as specs. The prototype still reads
-  `information_schema` through plans. Reading a database and diffing it against itself gives an empty change set
-  (tested); foreign keys, CHECKs and default values join the comparison when the catalog lists them (E1).
+  catalog (`db.catalog` in process, `catalog()` on the client: ADR 0016 §7), as specs: foreign keys, CHECKs and
+  default values too, which the catalog lists since smaltdb#200 (E1). Reading a database and diffing it against itself
+  gives an empty change set (tested).
 - **`db.diff(desired, { prune })`** compares. Tables the database has and the schema does not are reported, and
   dropped only with `prune`.
 - **Steps** and how each is classified:
@@ -418,7 +418,7 @@ Status against smaltdb `9cd575c` (2026-11-08). Most of the first round is in the
 | # | What | Status |
 |---|---|---|
 | **F1** | Renames failed once a materialized view existed (the engine's own tables had SQL text) | **fixed** (ADR 0017 §4) |
-| **E1** | Catalog as definitions (remainder: stenhoor/smaltdb#189) | **mostly done**: `db.catalog` / `catalog()` (ADR 0016 §7) give plan, storage and declared types, collations, keys, indexes, storage and source. **Still missing:** foreign keys, CHECKs and default values (only `hasDefault`); smaltts reads those three from `information_schema` meanwhile, and would read them from the catalog once it lists them. A small smaltdb PR. |
+| **E1** | Catalog as definitions (stenhoor/smaltdb#189) | **done**: `db.catalog` / `catalog()` (ADR 0016 §7) give plan, storage and declared types, collations, keys, indexes, storage and source, and since stenhoor/smaltdb#200 foreign keys, CHECKs and default values, as the schema operations' definitions. smaltts reads every database from the catalog alone. |
 | **E11** | Expression texts of definitions without source text follow renames (stenhoor/smaltdb#190) | **open**: a table defined without source text keeps its CHECK and default texts as given, and an in-place `renameColumn` cannot edit them (no language owns them), so smaltts plans a rebuild for a rename that a CHECK or computed default reads. The engine could keep such expressions by column position, or let the defining language register an editor without owning the table. |
 | **E2** | Structured EXPLAIN with costs (stenhoor/smaltdb#187) | **open**: `plan` mode gives a detail string per node and no estimates; `analyze` gives estimated and actual rows, loops and time, no cost. |
 | **E3** | A view reference in plans | **done**: `scan` names a view, bound by its language (ADR 0016 §6). |
