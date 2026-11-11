@@ -3,6 +3,7 @@
  * CHECKs and computed defaults are compiled from their named expressions to plan expressions over the row (column `i`
  * is `col(0, i)`), and keep their expression's JSON as their text, which the catalog reader parses back.
  */
+import { LANGUAGE } from './source.js';
 import type * as plan from 'smaltdb/plan';
 import type { ExprNode } from './expr.js';
 import { type Field, expr } from './rel.js';
@@ -50,6 +51,8 @@ export function toTableDef(spec: TableSpec<any>): plan.TableDef {
   return {
     name: spec.name,
     storage: spec.storage ?? 'row',
+    // Its CHECK texts are smaltts expressions: the smaltts language edits them on a rename (smaltdb#190).
+    exprLanguage: LANGUAGE,
     columns: spec.columns.map(toColumnDef),
     keys: [...(spec.primaryKey ? [key(spec.primaryKey, 'primaryKey')] : []), ...(spec.unique ?? []).map((u) => key(u, 'unique'))],
     checks: (spec.checks ?? []).map((k) => ({ ...(k.name ? { name: k.name } : {}), text: JSON.stringify(k.expr), expr: compileOver(k.expr, fields, `a CHECK of ${spec.name}`) })),

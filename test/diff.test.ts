@@ -114,3 +114,23 @@ test('columnar tables round-trip too', async () => {
   expect(await db.rows(scan(wider).pick('amount'))).toEqual([{ amount: '2.0' }]);
   expect((await db.diff({ tables: [wider] })).steps).toEqual([]);
 });
+
+group('a rename a CHECK reads (smaltdb#190)', () => {
+  const checked = table('t', { id: int().primaryKey(), qty: int() }, { checks: (r) => [r.qty.gte(0)] });
+  const renamed = table('t', { id: int().primaryKey(), amount: int().renamedFrom('qty') }, { checks: (r) => [r.amount.gte(0)] });
+
+  test('is renamed in place: the engine edits the CHECK text with the smaltts language, and the CHECK holds', async () => {
+    (await import('../src/language.js')).registerSmaltts();
+    const db = attach(Database.openMemory());
+    await db.migrate({ tables: [checked] });
+    await db.load(checked, [{ id: 1, qty: 3 }]);
+    const changes = await db.diff({ tables: [renamed] });
+    expect(changes.steps.map((s) => `${s.action} ${s.impact} ${s.dataLoss}`)).toEqual(['renameColumn metadata none']);
+    await db.apply(changes);
+    // Read back: the CHECK names the new column, so the database matches the spec.
+    expect((await db.diff({ tables: [renamed] })).steps).toEqual([]);
+    await expect(db.load(renamed, [{ id: 2, amount: -1 }])).rejects.toThrow(/check/i);
+    expect(await db.rows(scan(renamed).pick('id', 'amount'))).toEqual([{ id: 1, amount: 3 }]);
+  });
+
+});

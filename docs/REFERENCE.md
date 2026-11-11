@@ -40,7 +40,7 @@ const db = attach(Database.openMemory());
 | | | |
 |---|---|---|
 | `attach(db)` | A `SmaltDb` over an engine `Database` (`smaltdb/engine`), a client `Database` (`smaltdb`, the engine in a worker), or a `Backend`. | Prototype (the client path is untested until milestone 10) |
-| `registerSmaltts()` (from `@smaltworks/smaltts/language`) | Registers smaltts with the engine as the language of the views it stores. Call it where the engine runs; in a worker entry, `defineWorker({ languages: [smalttsLanguage] })`. | Prototype |
+| `registerSmaltts()` (from `@smaltworks/smaltts/language`) | Registers smaltts with the engine as the language of the views it stores, and of its tables' CHECK texts, which the engine edits on a column rename (smaltdb#190; without it a renamed column's CHECK keeps the old name in its text, and the next diff rebuilds the table). Call it where the engine runs; in a worker entry, `defineWorker({ languages: [smalttsLanguage] })`. | Prototype |
 | `engineBackend(db)`, `clientBackend(db)`, `backendOf(db)` | The `Backend` interface over each kind of database: `run(statement, params)`, `transaction(fn)`, `callPlugin(…)`. | Prototype |
 
 ## Specs and types
@@ -184,7 +184,7 @@ dataLoss, reason, statements }`, where `statements` are the engine statements it
 | `dropColumn` | `rewrite` | `certain` |
 | `createIndex` | `build` | `none` |
 | `dropIndex` | `metadata` | `none` |
-| `rebuildTable` (a change the engine can't make in place: type, nullability, collation, default, keys, CHECKs, foreign keys, storage, column order, or renaming a column a CHECK or computed default reads) | `rewrite` | `none`, `possible` or `certain`, by the conversion table of [DESIGN.md 8.3](DESIGN.md#_8-3-type-changes-decided-by-types-never-by-data), never by the data |
+| `rebuildTable` (a change the engine can't make in place: type, nullability, collation, default, keys, CHECKs, foreign keys, storage, column order, or renaming a column a computed default reads) | `rewrite` | `none`, `possible` or `certain`, by the conversion table of [DESIGN.md 8.3](DESIGN.md#_8-3-type-changes-decided-by-types-never-by-data), never by the data |
 | `dropTable` (with `prune`) | `metadata` | `certain` |
 | `replaceView` (a reflecting materialized view whose columns change; a view reading a column a rebuild renames): drops the view and creates it again with its source as it should read, a materialized one filled again | `rewrite` (materialized), `metadata` | `none` |
 

@@ -285,12 +285,12 @@ function tableSteps(old: TableSpec<any>, want: TableSpec<any>, diagnostics: Diag
   if (!sameKey(after(old.primaryKey?.columns), want.primaryKey?.columns)) rebuild.push('the primary key changes');
   if (!sameKeys((old.unique ?? []).map((k) => ({ columns: after(k.columns)! })), want.unique ?? [])) rebuild.push('unique keys change');
   if (!sameChecks(old.checks ?? [], want.checks ?? [], renamed)) rebuild.push('CHECKs change');
-  // A rename in place leaves a CHECK's or computed default's text with the old name (a table without source text has
-  // no language to edit it), so renaming a column one of them reads is a rebuild, which writes the new text.
+  // A rename in place: the engine edits CHECK texts with the smaltts language (exprLanguage, smaltdb#190). It edits no
+  // default text, so renaming a column a computed default reads is still a rebuild, which writes the new text.
   const reads = (n: unknown, name: string) => JSON.stringify(n).toLowerCase().includes(`{"k":"col","name":${JSON.stringify(name.toLowerCase())}}`);
   for (const [from, to] of renamed) {
-    const readers = [...(old.checks ?? []).map((c) => c.expr), ...old.columns.map((c) => c.defaultExpr).filter((e) => e !== undefined)];
-    if (readers.some((e) => reads(e, from))) rebuild.push(`${to}: renamed from ${from}, which a CHECK or computed default reads`);
+    const readers = old.columns.map((c) => c.defaultExpr).filter((e) => e !== undefined);
+    if (readers.some((e) => reads(e, from))) rebuild.push(`${to}: renamed from ${from}, which a computed default reads`);
   }
   if (!sameForeignKeys(old.foreignKeys ?? [], want.foreignKeys ?? [], renamed)) rebuild.push('foreign keys change');
   if ((old.storage ?? 'row') !== (want.storage ?? 'row')) rebuild.push(`storage changes to ${want.storage ?? 'row'}`);

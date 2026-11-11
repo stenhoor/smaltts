@@ -1,7 +1,11 @@
 /** Milestone 2, part 2: CHECKs, computed defaults and foreign keys, enforced by the engine and read back for diffs. */
-import { expect, test } from 'vitest';
+import { beforeAll, expect, test } from 'vitest';
 import { Database } from 'smaltdb/engine';
 import { attach, fn, int, real, scan, table, text } from '../src/index.js';
+import { registerSmaltts } from '../src/language.js';
+
+// The engine edits smaltts's CHECK texts on a rename with the smaltts language (exprLanguage, smaltdb#190).
+beforeAll(() => registerSmaltts());
 
 const customers = table('customers', { id: int().primaryKey(), name: text().notNull() });
 const orders = table('orders', {
