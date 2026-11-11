@@ -186,22 +186,13 @@ export class SmaltDb {
     await this.backend.transaction(async (tx) => {
       if (mode === 'replace') await tx.run({ kind: 'write', plan: P.remove(target.name, P.scan(target.name, [-1]), 0) });
       if (mode === 'swap') {
-        // The engine cannot rename a columnar table (finding F4): a columnar target is recreated under its name and
-        // filled from a row-storage staging table instead.
-        const columnar = (target.storage ?? 'row') === 'columnar';
-        const next = { ...target, name: `${target.name}__smaltts_swap`, indexes: [], ...(columnar ? { storage: 'row' as const } : {}) };
+        // The new table is built beside the old one and renamed into its place, columnar tables too.
+        const next = { ...target, name: `${target.name}__smaltts_swap`, indexes: [] };
         await tx.run({ kind: 'schema', op: { op: 'drop', objectType: 'table', name: next.name, ifExists: true } });
         await tx.run({ kind: 'schema', op: { op: 'createTable', table: toTableDef(next), temp: false, ifNotExists: false } });
         await tx.run(write(next.name, false), bind(c, {}));
         await tx.run({ kind: 'schema', op: { op: 'drop', objectType: 'table', name: target.name, ifExists: false } });
-        if (columnar) {
-          const all = target.columns.map((_, i) => i);
-          await tx.run({ kind: 'schema', op: { op: 'createTable', table: toTableDef(target), temp: false, ifNotExists: false } });
-          await tx.run({ kind: 'write', plan: P.append(target.name, P.scan(next.name, all), all) });
-          await tx.run({ kind: 'schema', op: { op: 'drop', objectType: 'table', name: next.name, ifExists: false } });
-        } else {
-          await tx.run({ kind: 'schema', op: { op: 'alterTable', table: next.name, action: { kind: 'renameTable', newName: target.name } } });
-        }
+        await tx.run({ kind: 'schema', op: { op: 'alterTable', table: next.name, action: { kind: 'renameTable', newName: target.name } } });
         for (const ix of target.indexes ?? []) {
           await tx.run({ kind: 'schema', op: { op: 'createIndex', index: toIndexDef(target, ix), ifNotExists: false } });
         }
@@ -278,9 +269,8 @@ function rowsPlan(target: TableSpec<any>, rows: readonly Record<string, unknown>
   const names = [...new Set(rows.flatMap((r) => Object.keys(r)))];
   const cols = names.map((n) => target.columns[columnIndex(target, n)]!);
   const types = cols.map(columnPlanType);
-  // A Date in a date column goes in as its ISO day: the engine reads a Date as a datetime there (finding F3).
-  const value = (v: unknown, type: string) => (v === undefined ? null : type === 'date' && v instanceof Date ? v.toISOString().slice(0, 10) : v);
-  const data = names.map((n, i) => rows.map((r) => value(r[n], types[i]!))) as P.ValueColumn[];
+  // A Date in a date column is its UTC day, as the engine reads it there.
+  const data = names.map((n) => rows.map((r) => r[n] ?? null)) as P.ValueColumn[];
   return { plan: P.fromColumns(data, types), fields: cols.map((c, i) => ({ name: c.name, type: types[i]!, collation: c.collation ?? 'binary' })), params: [] };
 }
 

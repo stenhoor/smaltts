@@ -106,7 +106,7 @@ test('columnar tables round-trip too', async () => {
   await db.load(facts, [{ region: 'north', amount: 1.5 }]);
   expect((await db.diff({ tables: [facts] })).steps).toEqual([]);
   expect(await db.rows(scan(facts).pick('region', 'amount'))).toEqual([{ region: 'north', amount: 1.5 }]);
-  // A swap load and a rebuild work on columnar tables, though the engine cannot rename them (finding F4).
+  // A swap load and a rebuild work on columnar tables: the new table is renamed into place (finding F4, fixed).
   await db.load(facts, [{ region: 'south', amount: 2 }], { mode: 'swap' });
   expect(await db.rows(scan(facts).pick('region'))).toEqual([{ region: 'south' }]);
   const wider = table('facts', { id: int().primaryKey(), region: text().notNull(), amount: text() }, { storage: 'columnar' });

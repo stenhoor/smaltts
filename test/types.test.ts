@@ -25,7 +25,7 @@ async function loaded() {
   const db = attach(Database.openMemory());
   await db.migrate({ tables: [events] });
   await db.load(events, [
-    { ok: true, day, at, clock: '12:30:00', took: null, tags: ['a', 'b'], point: { x: 1.5, y: -2 }, history: [{ d: day, ok: false }] },
+    { ok: true, day, at, clock: '12:30:00', took: 'PT1H30M', tags: ['a', 'b'], point: { x: 1.5, y: -2 }, history: [{ d: day, ok: false }] },
     { ok: false, day: null, at: null, clock: null, took: null, tags: [], point: null, history: null },
   ]);
   return db;
@@ -34,7 +34,7 @@ async function loaded() {
 test('every type round-trips through a load and a read, as JavaScript values', async () => {
   const db = await loaded();
   const rows = await db.rows(scan(events).sort('id'));
-  expect(rows[0]).toEqual({ id: 1, ok: true, day, at, clock: '12:30:00', took: null, tags: ['a', 'b'], point: { x: 1.5, y: -2 }, history: [{ d: '2026-11-10', ok: false }] });
+  expect(rows[0]).toEqual({ id: 1, ok: true, day, at, clock: '12:30:00', took: 'PT1H30M', tags: ['a', 'b'], point: { x: 1.5, y: -2 }, history: [{ d: '2026-11-10', ok: false }] });
   expect(rows[1]).toEqual({ id: 2, ok: false, day: null, at: null, clock: null, took: null, tags: [], point: null, history: null });
   const first: { ok: boolean; day: Date | null; tags: (string | null)[] | null; point: { x: number | null; y: number | null } | null } = rows[0]!;
   expect(first.day).toBeInstanceOf(Date);

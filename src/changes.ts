@@ -395,26 +395,15 @@ function sameIndex(a: IndexSpec, b: IndexSpec, matched: Map<ColumnSpec, ColumnSp
   return cols(a, true) === cols(b, false) && !!a.unique === !!b.unique;
 }
 
-/** Rebuild `old` as `want`: new table, rows copied by an append plan, old table dropped, new one renamed. */
 /**
- * The statements of a rebuild. The engine cannot rename a columnar table (finding F4), so when either side is
- * columnar the rows go through a row-storage staging table: copy there, drop the old table, create the new one under
- * its name, copy back, drop the staging table. Otherwise the new table is built under a temporary name and renamed.
+ * The statements of a rebuild: the new table built under a temporary name, the rows copied by an append plan, the old
+ * table dropped and the new one renamed into its place (columnar tables too), then its indexes.
  */
 function* rebuildStatements(old: TableSpec<any>, want: TableSpec<any>, temp: TableSpec<any>, copy: plan.PlanOp): Generator<PlanStatementInput> {
-  const columnar = (old.storage ?? 'row') === 'columnar' || (want.storage ?? 'row') === 'columnar';
-  const staging = columnar ? { ...temp, storage: 'row' as const } : temp;
-  yield { kind: 'schema', op: { op: 'createTable', table: toTableDef(staging), temp: false, ifNotExists: false } };
+  yield { kind: 'schema', op: { op: 'createTable', table: toTableDef(temp), temp: false, ifNotExists: false } };
   yield { kind: 'write', plan: copy };
   yield { kind: 'schema', op: { op: 'drop', objectType: 'table', name: old.name, ifExists: false } };
-  if (columnar) {
-    yield { kind: 'schema', op: { op: 'createTable', table: toTableDef(want), temp: false, ifNotExists: false } };
-    const all = want.columns.map((_, i) => i);
-    yield { kind: 'write', plan: P.append(want.name, P.scan(staging.name, all), all) };
-    yield { kind: 'schema', op: { op: 'drop', objectType: 'table', name: staging.name, ifExists: false } };
-  } else {
-    yield { kind: 'schema', op: { op: 'alterTable', table: staging.name, action: { kind: 'renameTable', newName: want.name } } };
-  }
+  yield { kind: 'schema', op: { op: 'alterTable', table: temp.name, action: { kind: 'renameTable', newName: want.name } } };
   for (const ix of want.indexes ?? []) yield { kind: 'schema', op: { op: 'createIndex', index: toIndexDef(want, ix), ifNotExists: false } };
 }
 
