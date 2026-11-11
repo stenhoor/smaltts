@@ -505,6 +505,11 @@ Node's types and vitest for development and tests. Engine findings F2–F4 are f
 13. **TypeScript tooling is smaltty's** (2026-11-10): no `typescript` dependency; smaltty's checker is extended to
     cover smaltts. These and the earlier decisions are recorded in [ADR 0023](adr/0023-the-smaltts-language.md),
     accepted on 2026-11-10.
+14. **Plugins are typed by descriptors** (2026-11-11, open question 1): a plugin ships a smaltts module with typed
+    methods and table functions, and connections and external tables are specs, diffed and applied like tables
+    (milestone 9).
+15. **Flows wait** (2026-11-11, gate C): milestone 7 (flows) and smaltfl are not started yet; what a flow holds and
+    what smaltfl adds are decided when they are.
 
 Superseded by smaltdb ADR 0019 (accepted by the owner on 2026-11-07, after the 2026-11-06 interview): precision as
 part of the type, separate local and UTC types, `INTERVAL` with months, and a SQL dialect version. smaltts follows
@@ -516,8 +521,7 @@ before E10 (gate B).
 
 ### Open
 
-1. **Plugins**: typed descriptors (a plugin ships a smaltts module with typed methods and table functions), or the
-   generic `plugin(name).call()` only? Should connections and external tables be specs that are diffed and applied?
+1. ~~**Plugins**~~: decided (14).
 2. **Typed column lists in SQL**: E10 captures an interface's types when the view is created. Should smaltql also
    accept declared types in the list (`CREATE VIEW v(a INTEGER, b REAL) AS …`), a smaltql addition?
-3. **Flows and smaltfl** (gate C): what a flow holds and what smaltfl adds.
+3. **Flows and smaltfl** (gate C): what a flow holds and what smaltfl adds. Not yet (15).
