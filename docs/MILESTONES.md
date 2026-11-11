@@ -27,7 +27,10 @@ Size: S. Status: done, 2026-11-10.
 ## Alongside: smaltty's checker covers smaltts
 
 Size: L, in smaltty (its milestone 7, the checker trial), with the owner's decision of 2026-11-10 to start it with
-smaltts in its scope as well as smaltdf.
+smaltts in its scope as well as smaltdf. Status: done for smaltts, 2026-11-11: `npm run check` runs smaltty's checker
+(`test/checker.test.ts`, smaltty pinned at `40db25b`) over `test/` and the reference's examples with no errors, and all
+3 compile-time tests are found; smaltty's own tests compare the checker with tsc (no false errors on smaltts's code and
+on 1,076 mutants of its examples). It reads smaltts's source for its types, as there is no `.d.ts` without tsc.
 
 - smaltty's checker reads smaltts's `.d.ts` as it reads smaltdf's, and checks calls into smaltts: unknown methods
   and properties, argument types and counts, column names and types in row callbacks (which need its mapped,
@@ -168,7 +171,7 @@ Size: M. Needs smaltdb's 0.9.0 publish.
 | # | Milestone | Size | Waits on |
 |---|---|---|---|
 | 0 | Outside code | S | done (2026-11-10) |
-| — | smaltty's checker covers smaltts | L (smaltty) | smaltty's own milestones |
+| — | smaltty's checker covers smaltts | L (smaltty) | done for smaltts (2026-11-11) |
 | 1 | Re-base | M | done (2026-11-10) |
 | 2 | Types in specs | M | done (2026-11-10) |
 | 3 | Diff complete | L | done (2026-11-10) |

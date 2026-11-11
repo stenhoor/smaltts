@@ -471,7 +471,9 @@ The prototype (`src/`, 178 tests) runs against smaltdb 0.9.0 (`1ce660a`).
 - **Milestone 6, part 1:** interface views with a column list (names and order), view sources that follow renames
   column by column (`src/views.ts`), and change sets that check every view over a changed table (section 8).
 
-Typed interfaces wait on the engine (E10, milestone 6 part 2), and the client path is untested
+Static checks run with smaltty's checker (`test/checker.test.ts`): the tests and the reference's examples have no
+errors, and every compile-time test (`@ts-expect-error`) is found. Typed interfaces wait on the engine (E10,
+milestone 6 part 2), and the client path is untested
 (milestone 10). Its dev dependencies were settled by the owner on 2026-11-10 (milestone 0): no `typescript`; smaltty,
 Node's types and vitest for development and tests. Engine findings F2–F4 are open, each pinned by a failing test.
 

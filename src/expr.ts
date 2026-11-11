@@ -52,25 +52,25 @@ export class Expr<T> {
     return new Expr<R>({ k: 'fn', name, args: [this.node, ...args.map(toNode)] });
   }
   /** `cmp_eq`: equal (NULL if either side is NULL). */
-  eq(other: Arg<T>): Expr<boolean | null> { return this.call('cmp_eq', other); }
+  eq(other: Arg<T | null>): Expr<boolean | null> { return this.call('cmp_eq', other); }
   /** `cmp_ne` */
-  ne(other: Arg<T>): Expr<boolean | null> { return this.call('cmp_ne', other); }
+  ne(other: Arg<T | null>): Expr<boolean | null> { return this.call('cmp_ne', other); }
   /** `cmp_lt` */
-  lt(other: Arg<T>): Expr<boolean | null> { return this.call('cmp_lt', other); }
+  lt(other: Arg<T | null>): Expr<boolean | null> { return this.call('cmp_lt', other); }
   /** `cmp_le` */
-  lte(other: Arg<T>): Expr<boolean | null> { return this.call('cmp_le', other); }
+  lte(other: Arg<T | null>): Expr<boolean | null> { return this.call('cmp_le', other); }
   /** `cmp_gt` */
-  gt(other: Arg<T>): Expr<boolean | null> { return this.call('cmp_gt', other); }
+  gt(other: Arg<T | null>): Expr<boolean | null> { return this.call('cmp_gt', other); }
   /** `cmp_ge` */
-  gte(other: Arg<T>): Expr<boolean | null> { return this.call('cmp_ge', other); }
+  gte(other: Arg<T | null>): Expr<boolean | null> { return this.call('cmp_ge', other); }
   /** `cmp_is`: equal, where NULL equals NULL; never NULL. */
   is(other: Arg<T | null>): Expr<boolean> { return this.call('cmp_is', other); }
   /** `cmp_is_not` */
   isNot(other: Arg<T | null>): Expr<boolean> { return this.call('cmp_is_not', other); }
   /** `in_list` with a list of values; with a relation of one column, the `inSubquery` node (1, 0 or NULL). */
-  in(values: readonly Arg<T>[] | OneColumn<T>): Expr<boolean | null> {
+  in(values: readonly Arg<T | null>[] | OneColumn<T | null>): Expr<boolean | null> {
     if (!Array.isArray(values)) return new Expr({ k: 'inRel', probe: this.node, rel: (values as OneColumn<T>).node });
-    return this.call('in_list', ...(values as readonly Arg<T>[]));
+    return this.call('in_list', ...(values as readonly Arg<T | null>[]));
   }
   /** `like` */
   like(pattern: Arg<string>): Expr<boolean | null> { return this.call('like', pattern); }
