@@ -37,10 +37,26 @@ registerSmaltts();
 const db = attach(Database.openMemory());
 ```
 
+In a page, the engine runs in a worker: the worker entry starts smaltdb's engine with smaltts's language registered,
+and the page attaches smaltdb's client.
+
+<!-- spec:browser -->
+```ts
+// db-worker.ts
+import { defineSmalttsWorker } from '@smaltworks/smaltts/worker';
+defineSmalttsWorker();
+
+// the page
+import { open } from 'smaltdb';
+import { attach } from '@smaltworks/smaltts';
+const db = attach(await open('app.db', { worker: () => new Worker(new URL('./db-worker.ts', import.meta.url), { type: 'module' }) }));
+```
+
 | | | |
 |---|---|---|
-| `attach(db)` | A `SmaltDb` over an engine `Database` (`smaltdb/engine`), a client `Database` (`smaltdb`, the engine in a worker), or a `Backend`. | Prototype (the client path is untested until milestone 10) |
-| `registerSmaltts()` (from `@smaltworks/smaltts/language`) | Registers smaltts with the engine as the language of the views it stores, and of its tables' CHECK texts, which the engine edits on a column rename (smaltdb#190; without it a renamed column's CHECK keeps the old name in its text, and the next diff rebuilds the table). Call it where the engine runs; in a worker entry, `defineWorker({ languages: [smalttsLanguage] })`. | Prototype |
+| `attach(db)` | A `SmaltDb` over an engine `Database` (`smaltdb/engine`), a client `Database` (`smaltdb`, the engine in a worker), or a `Backend`. Through the client it gives what it gives in process: the same scenarios run both ways in Node and in Chromium, Firefox and WebKit (`test/client.test.ts`, `npm run test:browser`). | Prototype |
+| `defineSmalttsWorker(options?)` (from `@smaltworks/smaltts/worker`) | Starts smaltdb's engine worker (`defineWorker` from `smaltdb/worker-runtime`) with smaltts's language registered, and the languages, plugins and parallel-reader setting of `options`. | Prototype |
+| `registerSmaltts()` (from `@smaltworks/smaltts/language`) | Registers smaltts with the engine as the language of the views it stores, and of its tables' CHECK texts, which the engine edits on a column rename (smaltdb#190; without it a renamed column's CHECK keeps the old name in its text, and the next diff rebuilds the table). Call it where the engine runs in process; in a worker, `defineSmalttsWorker()` does it. | Prototype |
 | `engineBackend(db)`, `clientBackend(db)`, `backendOf(db)` | The `Backend` interface over each kind of database: `run(statement, params)`, `transaction(fn)`, `callPlugin(…)`. | Prototype |
 
 ## Specs and types

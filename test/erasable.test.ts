@@ -14,10 +14,10 @@ for (const file of readdirSync(src).filter((f) => f.endsWith('.ts'))) {
   });
 }
 
-test('only the language entry point imports the engine; the rest imports smaltdb/plan alone', () => {
-  const engine = /from 'smaltdb(\/engine|\/language)?'/;
+test('only the language and worker entry points import the engine; the rest imports smaltdb/plan alone', () => {
+  const engine = /from 'smaltdb(\/engine|\/language|\/worker-runtime)?'/;
   const offenders = readdirSync(src)
-    .filter((f) => f.endsWith('.ts') && f !== 'language.ts')
+    .filter((f) => f.endsWith('.ts') && f !== 'language.ts' && f !== 'worker.ts')
     .filter((f) => readFileSync(join(src, f), 'utf8').split('\n').some((line) => engine.test(line) && !/^import type /.test(line)));
   expect(offenders).toEqual([]);
 });

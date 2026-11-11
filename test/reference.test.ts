@@ -1,7 +1,8 @@
 /**
  * The API reference is the specification: every TypeScript example in docs/REFERENCE.md and the guide must strip with
  * smaltty (erasable TypeScript, as smaltui and smaltnb run it) and then run against the in-process engine. Examples of
- * API that is specified but not built yet are marked `<!-- spec:planned -->` and skipped.
+ * API that is specified but not built yet are marked `<!-- spec:planned -->` and skipped. Examples that run in a page (a
+ * Web Worker) are marked `<!-- spec:browser -->`: they strip here, and `npm run test:browser` runs what they do.
  *
  * Static type checks of the examples return when smaltty's checker covers smaltts (docs/MILESTONES.md).
  */
@@ -15,7 +16,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const PAGES = ['docs/REFERENCE.md', 'docs/guide/getting-started.md'];
 const dir = join(root, 'test/.reference');
 
-interface Example { page: string; code: string; line: number; planned: boolean }
+interface Example { page: string; code: string; line: number; planned: boolean; browser: boolean }
 
 /** The ```ts blocks of the pages, with whether each is marked planned. */
 function examples(): Example[] {
@@ -30,8 +31,8 @@ function examplesOf(page: string): Example[] {
     const start = i + 1;
     let end = start;
     while (lines[end] !== '```') end++;
-    const planned = lines.slice(Math.max(0, i - 2), i).some((l) => l.trim() === '<!-- spec:planned -->');
-    out.push({ page, code: lines.slice(start, end).join('\n'), line: start + 1, planned });
+    const marks = lines.slice(Math.max(0, i - 2), i).map((l) => l.trim());
+    out.push({ page, code: lines.slice(start, end).join('\n'), line: start + 1, planned: marks.includes('<!-- spec:planned -->'), browser: marks.includes('<!-- spec:browser -->') });
     i = end;
   }
   return out;
@@ -49,6 +50,12 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 for (const [i, e] of examples().entries()) {
   if (e.planned) continue;
+  if (e.browser) {
+    test(`${e.page}:${e.line} strips with smaltty (it runs in a page: npm run test:browser)`, () => {
+      expect(strip(e.code, { fileName: `${e.page}:${e.line}` }).length).toBe(e.code.length);
+    });
+    continue;
+  }
   test(`${e.page}:${e.line} strips with smaltty and runs`, async () => {
     // smaltty rejects what isn't erasable TypeScript, with the line and column.
     const js = strip(e.code, { fileName: `${e.page}:${e.line}` });

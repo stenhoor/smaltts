@@ -1,7 +1,7 @@
 /**
  * Engine findings (docs/DESIGN.md section 11), pinned against the raw plan API: each `test.fails` passes while the
  * engine still has the bug, and fails (so it must become a plain test) once smaltdb fixes it. F2–F4 are fixed
- * (stenhoor/smaltdb#196, #197, #199) and are plain tests now, so a regression shows.
+ * (stenhoor/smaltdb#196, #197, #199) and are plain tests now, so a regression shows. F5 is open (stenhoor/smaltdb#215).
  */
 import { expect, test } from 'vitest';
 import { Database } from 'smaltdb/engine';
@@ -37,4 +37,16 @@ test('F4: a columnar table can be renamed', () => {
   db.queryPlan({ kind: 'schema', op: { op: 'createTable', temp: false, ifNotExists: false, table: { name: 't', storage: 'columnar', columns: [columnOf('INTEGER')], keys: [], checks: [], foreignKeys: [] } } });
   db.queryPlan({ kind: 'schema', op: { op: 'alterTable', table: 't', action: { kind: 'renameTable', newName: 'u' } } });
   expect(db.catalog.table('u')?.storage).toBe('columnar');
+});
+
+// F5 (stenhoor/smaltdb#215): an update whose input reads the rowid first, as smaltts's updateWhere builds it, computes
+// its sets from the column after the one it names: `total * 2` writes `paid * 2`. Fixed by #215: this becomes a plain
+// test when the pin includes it.
+test.fails('F5: an update reads its set values from the input row, whatever its layout', () => {
+  const db = Database.openMemory();
+  const c = (name: string, type: P.StorageType): P.ColumnDef => ({ name, declaredType: type, type, notNull: false, collation: 'binary' });
+  db.queryPlan({ kind: 'schema', op: { op: 'createTable', temp: false, ifNotExists: false, table: { name: 't', storage: 'row', columns: [c('id', 'INTEGER'), c('total', 'REAL'), c('paid', 'BOOLEAN')], keys: [], checks: [], foreignKeys: [] } } });
+  db.queryPlan({ kind: 'write', plan: P.append('t', P.fromColumns([[2], [80], [true]], ['int', 'real', 'bool']), [0, 1, 2]) });
+  db.queryPlan({ kind: 'write', plan: P.update('t', P.scan('t', [-1, 0, 1, 2]), 0, [{ column: 1, value: P.call('mul', [P.col(0, 2, 'real'), P.lit(2)], 'num') }]) });
+  expect(db.queryPlan(P.scan('t', [1])).rows).toEqual([[160]]);
 });
