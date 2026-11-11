@@ -125,10 +125,6 @@ export function diffCatalog(have: readonly TableSpec<any>[], desired: SchemaSpec
 // ---------------------------------------------------------------------------------------------------------------
 // Views over changed tables (DESIGN.md section 8).
 
-/** The storage type of a plan type, for the conversion table. */
-const STORAGE: Record<string, StorageType> = { int: 'INTEGER', real: 'REAL', num: 'NUMERIC', text: 'TEXT', blob: 'BLOB', any: 'ANY', bool: 'BOOLEAN', date: 'DATE', datetime: 'DATETIME', time: 'TIME', duration: 'DURATION' };
-const storageOf = (t: string): StorageType | undefined => STORAGE[t] ?? (t.startsWith('list<') ? 'LIST' : t.startsWith('struct<') ? 'STRUCT' : undefined);
-
 /** How a desired table continues one in the database: its old name and its columns' renames (old to new). */
 interface Continued {
   readonly old: TableSpec<any>;
@@ -169,8 +165,9 @@ function viewSteps(views: ViewsOf, have: readonly TableSpec<any>[], desired: Sch
     const rel = before(name);
     return rel && edited(rel, true);
   };
+  const interfaceOf = (n: string) => views.views.find((v) => same(v.name, n))?.interface;
   const compileWith = (rel: RelNode, tables: readonly TableSpec<any>[], view: (n: string) => RelNode | undefined): Field[] =>
-    [...compileRel(rel, { table: (n) => findTable(tables, n) ?? (findTable(have, n) ? undefined : views.table(n)), view, ...(views.resultType ? { resultType: views.resultType } : {}) }).fields];
+    [...compileRel(rel, { table: (n) => findTable(tables, n) ?? (findTable(have, n) ? undefined : views.table(n)), view, viewInterface: interfaceOf, ...(views.resultType ? { resultType: views.resultType } : {}) }).fields];
 
   const out: Step[] = [];
   for (const v of ours) {
@@ -191,16 +188,29 @@ function viewSteps(views: ViewsOf, have: readonly TableSpec<any>[], desired: Sch
     }
     const shape = (fs: readonly Field[]) => fs.map((f) => `${f.name} ${f.type}`).join(', ');
     let rewrite = JSON.stringify(rel) !== JSON.stringify(edited(source.rel, false));
-    if (source.columns) {
-      // An interface: its names and order hold by construction; a type change must convert losslessly to the old type.
+    if (v.interface) {
+      // The engine holds the view's interface (smaltdb ADR 0027): smaltts refuses what would break it, as the engine
+      // would, rather than dropping the view (the owner's decision). A lossless type change is converted by the engine.
+      const iface = v.interface;
+      if (fields.length < iface.length || (fields.length > iface.length && source.columns)) {
+        diagnostics.push({ level: 'error', object: v.name, message: `the change set breaks this view's interface: it would give ${fields.length} columns, not ${iface.length}` });
+        continue;
+      }
+      if (fields.length > iface.length) diagnostics.push({ level: 'info', object: v.name, message: `the view keeps its columns (${iface.map((c) => c.name).join(', ')}): the new ones don't reach it` });
+      for (const [i, want] of iface.entries()) {
+        const f = fields[i]!;
+        if (f.type === want.type) continue;
+        if (P.isLossless(f.type, want.type)) diagnostics.push({ level: 'info', object: `${v.name}.${want.name}`, message: `the column becomes ${f.type}: the engine converts it to the interface's ${want.type}` });
+        else diagnostics.push({ level: 'error', object: `${v.name}.${want.name}`, message: `the interface's column becomes ${f.type}, which doesn't convert losslessly to its ${want.type}: change the view in the same change set` });
+      }
+    } else if (source.columns) {
+      // An interface view made before the engine held interfaces: its names and order hold by construction; a type
+      // change must convert losslessly to the old type.
       for (const [i, f] of fields.entries()) {
         const was = old[i]!;
         if (was.type === f.type) continue;
-        const from = storageOf(f.type);
-        const to = storageOf(was.type);
-        const conv = from && to ? conversion(from, to) : undefined;
-        if (!conv || conv.loss !== 'none') diagnostics.push({ level: 'error', object: `${v.name}.${f.name}`, message: `the interface's column becomes ${f.type}, which doesn't convert losslessly to its ${was.type}: change the view in the same change set` });
-        else diagnostics.push({ level: 'warning', object: `${v.name}.${f.name}`, message: `the interface's column becomes ${f.type} (lossless to its ${was.type}); its type is held once the engine holds interfaces (E10)` });
+        if (!P.isLossless(f.type, was.type)) diagnostics.push({ level: 'error', object: `${v.name}.${f.name}`, message: `the interface's column becomes ${f.type}, which doesn't convert losslessly to its ${was.type}: change the view in the same change set` });
+        else diagnostics.push({ level: 'warning', object: `${v.name}.${f.name}`, message: `the interface's column becomes ${f.type} (lossless to its ${was.type}); the engine holds no interface for this view, made before it did` });
       }
     } else if (shape(old) !== shape(fields)) {
       diagnostics.push({ level: 'info', object: v.name, message: `the view's columns follow the change: (${shape(old)}) → (${shape(fields)})` });
@@ -230,7 +240,8 @@ function replaceViewStep(v: CatalogViewInfo, source: ViewSource, reason: string)
           name: v.name,
           temp: false,
           ifNotExists: false,
-          ...(source.columns ? { columns: source.columns } : {}),
+          // A view the engine holds an interface for keeps its names when made again.
+          ...(source.columns ? { columns: source.columns } : v.interface ? { columns: v.interface.map((c) => c.name) } : {}),
           materialized: v.materialized,
           ...(v.materialized ? { options: { storage: v.storage ?? 'row' }, withData: true } : {}),
           source: { language: LANGUAGE, text: JSON.stringify(source) },

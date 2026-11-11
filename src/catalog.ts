@@ -5,7 +5,7 @@
  * It reads the engine's catalog API (ADR 0016 section 7: `db.catalog` in process, `catalog()` on the client), the same
  * in both places, and nothing else: columns, keys, indexes, storage, defaults, CHECKs and foreign keys (smaltdb#189).
  */
-import type { CatalogData, CatalogTable } from 'smaltdb/plan';
+import type { CatalogData, CatalogTable, ViewInterfaceColumn } from 'smaltdb/plan';
 import type { Backend } from './backend.js';
 import type { RelNode } from './rel.js';
 import type { ExprNode } from './expr.js';
@@ -22,6 +22,14 @@ export interface CatalogViewInfo {
   readonly columns?: readonly string[];
   /** A materialized view's storage. */
   readonly storage?: 'row' | 'columnar';
+  /**
+   * Its interface (smaltdb ADR 0027): the columns it gave when it was made, by name, type and whether they can be NULL,
+   * which the engine holds. Absent for a view made before interfaces, which reflects (`reflects`), and for a view that
+   * hasn't bound yet.
+   */
+  readonly interface?: readonly ViewInterfaceColumn[];
+  /** Made before interfaces: it reflects what it reads (DESIGN.md section 8.1). */
+  readonly reflects?: boolean;
 }
 
 /** A view's declared columns: the engine's column list, or a smaltts source's. */
@@ -45,6 +53,8 @@ export interface Catalog {
   view(name: string): RelNode | undefined;
   /** A plain view in another language that declares its columns: its column names. */
   foreignView(name: string): readonly string[] | undefined;
+  /** A smaltts view's interface (smaltdb ADR 0027), as compiling reads it. */
+  viewInterface(name: string): readonly ViewInterfaceColumn[] | undefined;
   /** The engine's result type of a function for these argument types, where the backend can answer. */
   resultType?(name: string, args: readonly import('smaltdb/plan').PlanType[]): import('smaltdb/plan').PlanType | undefined;
 }
@@ -117,13 +127,13 @@ export async function readCatalog(db: Backend): Promise<Catalog> {
     else if (t.kind === 'materializedView') {
       stored.push(spec);
       const columns = declared(t.source?.language, t.source?.text ?? '');
-      views.push({ name: t.name, materialized: true, language: t.source?.language, definition: t.source?.text ?? '', ...(columns ? { columns } : {}), storage: t.storage === 'columnar' ? 'columnar' : 'row' });
+      views.push({ name: t.name, materialized: true, language: t.source?.language, definition: t.source?.text ?? '', ...(columns ? { columns } : {}), storage: t.storage === 'columnar' ? 'columnar' : 'row', ...(t.interface ? { interface: t.interface } : { reflects: true }) });
     }
   }
   for (const v of data.views) {
     if (v.schema !== 'main') continue;
     const columns = declared(v.language, v.text, v.columns);
-    views.push({ name: v.name, materialized: false, language: v.language, definition: v.text, ...(columns ? { columns } : {}) });
+    views.push({ name: v.name, materialized: false, language: v.language, definition: v.text, ...(columns ? { columns } : {}), ...(v.interface ? { interface: v.interface } : v.reflects ? { reflects: true } : {}) });
   }
   const find = (n: string) => tables.find((s) => same(s.name, n)) ?? stored.find((s) => same(s.name, n));
   return {
@@ -133,6 +143,10 @@ export async function readCatalog(db: Backend): Promise<Catalog> {
     view(n) {
       const v = data.views.find((x) => same(x.name, n));
       return v && v.language === LANGUAGE ? (JSON.parse(v.text) as ViewSource).rel : undefined;
+    },
+    viewInterface(n) {
+      const v = data.views.find((x) => same(x.name, n));
+      return v && v.language === LANGUAGE ? v.interface : undefined;
     },
     foreignView(n) {
       const v = data.views.find((x) => same(x.name, n));

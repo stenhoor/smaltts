@@ -249,10 +249,19 @@ stands; the thin rule makes it a one-to-one mapping of the plan format rather th
 
 ## 8. Views and materialized views
 
+**Since smaltdb ADR 0027 (2026-11-11), every new view has an interface the engine holds**, with a column list or
+without one: the columns it gives when it is made, by name, type and whether they can be NULL. A view no longer
+reflects by default: decision 5's reflecting views remain only for views made before interfaces (the catalog marks
+them `reflects`), and sections 8.1 and 8.2 describe them as such. The engine refuses DDL that would break an interface,
+whichever language issues it, converts a column whose type changed losslessly, and `cascade` drops the views a change
+breaks. smaltts refuses such a change set rather than cascading (the owner's decision): the view is dropped first, by
+hand. smaltts reads its own views inlined, so it applies their interfaces itself (`asInterface` in `src/rel.ts`), as
+the engine does where it expands a view.
+
 ```ts
-// A reflecting view (the default): its columns follow the tables it reads.
+// A view: it keeps the columns it gives now (its interface).
 await db.createView('big_orders', scan(orders).filter((o) => o.total.gt(100)));
-// An interface view: its columns are declared, and are a contract.
+// A view with a column list: these columns, in this order.
 await db.createView('order_totals', byCustomer, { columns: ['customerId', 'total'], materialized: true, storage: 'columnar' });
 await db.createView('daily', byDay, { columns: true });   // declare the relation's current columns as the interface
 await db.refresh('order_totals', { concurrently: true });
@@ -288,8 +297,9 @@ column list. A smaltts view without a column list follows the table, as smaltql'
 
 ### 8.2 What protects an interface
 
-Checked against smaltdb `0b36f33`, whichever language issues the DDL (smaltql's DDL reaches the engine as the same
-schema operations):
+Checked against smaltdb `0b36f33`, before ADR 0027, whichever language issues the DDL (smaltql's DDL reaches the
+engine as the same schema operations). Since ADR 0027 every row holds for views made with interfaces (all new ones);
+the table describes views made before:
 
 | DDL | What happens today | Interface |
 |---|---|---|
@@ -299,8 +309,8 @@ schema operations):
 | Drop and recreate a table with other types | allowed; the view silently gives the new types | lost |
 | Drop or replace the view | allowed | lost |
 
-Names and order hold today. Types, and protection against drops and recreation, need the engine (E10): a contract
-that only smaltts checked would be a convention that any SQL session could break.
+Before ADR 0027 only names and order held: a contract that only smaltts checked was a convention any SQL session
+could break. The engine now holds the whole interface (E10).
 
 ### 8.3 Type changes: decided by types, never by data
 
@@ -340,7 +350,9 @@ it is, so an integer under a temporal type is copied as that integer (a `date`'s
 (`cast_text`, `cast_datetime`, `cast_integer_strict`, …), and the pair's entry gives the step's data loss. A pair with
 no conversion (a `date` to a `duration`, a list's element type) is an error in the change set: drop the column and add
 a new one, or convert the values in a load. Every lossless entry is checked on real values (`test/diff.test.ts`).
-smaltts keeps this table until the engine publishes its own (E10).
+The engine publishes its own table now (`conversion` in `smaltdb/plan`, smaltdb ADR 0027), by plan types: smaltts
+checks views with it. Table rebuilds still use smaltts's table (`src/conversions.ts`), by storage types, because it
+tells NUMERIC and ANY columns apart, which the engine's plan types don't (both are `any`).
 
 ### 8.4 Materialized views
 
@@ -431,7 +443,7 @@ Status against smaltdb `9cd575c` (2026-11-08). Most of the first round is in the
 | **F2** | **fixed** (stenhoor/smaltdb#196, for #191) | Values from columns read text in the result format for `date`, `time` and `datetime` but not for `duration` (ADR 0019 §5: text in the result format parses). | Writing a `duration` from its text, which smaltts does now. A plain test in `test/engine-findings.test.ts` guards it. |
 | **F4** | **fixed** (stenhoor/smaltdb#199, for #193) | ALTER TABLE could not rename a columnar table. smaltts rebuilt and swap-loaded columnar tables through a row-storage staging table (two copies). | Rebuilds and swap loads of columnar tables, now renamed into place like row tables. A plain test guards it. |
 | **F3** | **fixed** (stenhoor/smaltdb#197, for #192) | A JavaScript `Date` in a `date` column of values was taken as a `datetime` (µs), a day millions of years away. smaltts gave the ISO day text instead. | `Date`s into `date` columns, now given as they are. A plain test guards it. |
-| **E10** | View interfaces in the engine (stenhoor/smaltdb#188): typed column lists, the conversion table, dependents checked after every DDL (refusing drops and recreation under an interface unless cascaded) | open; the largest, and the one section 8 depends on |
+| **E10** | View interfaces in the engine (stenhoor/smaltdb#188): typed column lists, the conversion table, dependents checked after every DDL (refusing drops and recreation under an interface unless cascaded) | done (smaltdb ADR 0027; smaltdb#204–#211, smaltql#66–#67) |
 
 The engine also gained what smaltts did not ask for and now uses: errors with an `origin` and structured fields,
 typed results and write counts, `streamPlan`, guaranteed order, and the operations of ADR 0016 §5 (pivot, unpivot,
@@ -487,7 +499,8 @@ Node's types and vitest for development and tests. Engine findings F2–F4 are f
 4. **Blocking rebuilds are acceptable for v1**: one transaction holds the writer for the copy. Resumable rebuilds
    (E8) come later.
 5. **Views have two purposes**: reflecting by default; interface when declared with a column list, in every language
-   (section 8.1).
+   (section 8.1). *Superseded for new views by smaltdb ADR 0027 (2026-11-11): every view made from now on has an
+   interface; views made before keep reflecting.*
 6. **Type changes are decided by types, never by data**: breaking unless lossless for every value; no row-level
    validation and no errors while reading (section 8.3).
 7. **Interfaces are enforced by the engine** (E10), so that DDL from smaltql cannot break what smaltts declared. No

@@ -49,6 +49,11 @@ export const smalttsLanguage: SmaltLanguage = {
         return t ? specOfCatalogTable(t) : undefined;
       },
       view: (name) => viewOf(ctx, name),
+      // A view read inside this one gives its interface (smaltdb ADR 0027), as the engine reads it.
+      viewInterface: (name) => {
+        const v = ctx.getView?.(name);
+        return v && v.source.language === LANGUAGE ? v.interface : undefined;
+      },
       resultType: (name, args) => ctx.catalog.resultType(name, args),
     });
     if (compiled.params.length) throw new Error('a view cannot have parameters');

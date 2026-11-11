@@ -377,16 +377,16 @@ const orders = table('orders', { id: int().primaryKey(), customerId: int().notNu
 await db.migrate({ tables: [orders] });
 await db.load(orders, [{ customerId: 1, total: 150 }]);
 
-// A reflecting view: its columns follow the table.
+// A view: it keeps the columns it gives now (its interface, which the engine holds).
 await db.createView('big_orders', scan(orders).filter((o) => o.total.gt(100)));
-// An interface view: these columns, in this order, whatever changes underneath.
+// A view with a column list: these columns, in this order.
 const totals = scan(orders).aggregate((o) => ({ customerId: o.customerId }), (o) => ({ total: agg.sum(o.total) }));
 await db.createView('order_totals', totals, { columns: ['customerId', 'total'], materialized: true, storage: 'columnar' });
 await db.refresh('order_totals', { concurrently: true });
 
-// Rename a column and add one: the reflecting view follows, the interface holds.
+// Rename a column and add one: both views keep their columns, by the names they had.
 await db.migrate({ tables: [table('orders', { id: int().primaryKey(), customer: int().notNull().renamedFrom('customerId'), total: real().notNull(), note: real() })] });
-assert.deepEqual(Object.keys((await db.rows(scan('big_orders')))[0]!), ['id', 'customer', 'total', 'note']);
+assert.deepEqual(Object.keys((await db.rows(scan('big_orders')))[0]!), ['id', 'customerId', 'total']);
 await db.refresh('order_totals');
 assert.deepEqual(await db.rows(scan('order_totals')), [{ customerId: 1, total: 150 }]);
 ```
@@ -394,23 +394,25 @@ assert.deepEqual(await db.rows(scan('order_totals')), [{ customerId: 1, total: 1
 | | | |
 |---|---|---|
 | `db.createView(name, rel, { columns?, materialized?, storage?, populate?, replace? })` | Stores `rel` as a smaltts view, bound by name each time it is read. | Prototype |
-| `columns: [...]` or `columns: true` | Declares the view an **interface**: these of the relation's columns, in this order (`true`: all of them as they are now). Without it the view is **reflecting** and follows the tables. A column the relation doesn't have, or one listed twice, is refused. | Prototype (names and order; types with E10) |
+| `columns: [...]` or `columns: true` | These of the relation's columns, in this order (`true`: all of them as they are now). Without it, the view gives the relation's columns as they are now. Either way the engine keeps the view's **interface**: its columns' names, types and whether they can be NULL ([smaltdb ADR 0027](https://github.com/stenhoor/smaltdb/blob/main/docs/adr/0027-view-interfaces.md)). A column the relation doesn't have, or one listed twice, is refused. | Prototype |
 | `db.dropView(name, { materialized?, ifExists? })` | Drops a view. | Prototype |
 | `db.refresh(name, { concurrently?, ifChanged? })` | Fills a materialized view again. | Prototype |
-| `db.catalog().views` | Each view's `name`, `materialized`, `language`, `definition`, and `columns` when it is an interface (any language's column list) and `storage` when materialized. | Prototype |
+| `db.catalog().views` | Each view's `name`, `materialized`, `language`, `definition`, its `interface` (`{ name, type, notNull }` per column), `columns` when it has a column list (in any language), `storage` when materialized, and `reflects` for a view made before interfaces. | Prototype |
 
-What a change underneath does to each kind of view:
+What a change underneath does to a view (the engine holds its interface, whichever language issues the DDL):
 
-| | Reflecting view | Interface view |
+| | A view | A view made before interfaces (`reflects`) |
 |---|---|---|
-| A column it reads is renamed | a column it passes through takes the new name; a column it names itself (`select`, `pick`, an aggregate) keeps its name | it reads the new name; its output doesn't change |
-| A column is added to a table it reads in full | it gains the column (a materialized view is recreated: `replaceView`) | it doesn't change |
-| A column it passes through is dropped | it loses the column (a materialized view is recreated) | an error in the change set |
-| A column it names or filters on is dropped | an error in the change set (the engine refuses the drop too) | an error in the change set |
+| A column it reads is renamed | it reads the new name; its columns keep their names | a column it passes through takes the new name; a column it names itself (`select`, `pick`, an aggregate) keeps its name |
+| A column is added to a table it reads in full | it doesn't change (a note in the change set) | it gains the column (a materialized view is recreated: `replaceView`) |
+| A column it gives is dropped | an error in the change set, and the engine refuses the drop | it loses the column (a materialized view is recreated) |
+| A column it names or filters on is dropped | an error in the change set | an error in the change set (the engine refuses the drop too) |
+| A column's type changes | converted by the engine to the interface's type when that is lossless (a note); otherwise an error | the view gives the new type |
 
 A rename follows the column, not its name: a column of the same name in another table the view reads is untouched.
-Which type changes an interface allows is specified in [DESIGN.md section 8.3](DESIGN.md#_8-3-type-changes-decided-by-types-never-by-data);
-typed interfaces that hold whichever language issues the DDL need the engine (E10, stenhoor/smaltdb#188).
+smaltts refuses a change set that would break a view rather than dropping the view (the owner's decision); drop the
+view first, by hand. Which type changes are lossless is the engine's conversion table (`conversion` in `smaltdb/plan`,
+[DESIGN.md section 8.3](DESIGN.md#_8-3-type-changes-decided-by-types-never-by-data)).
 
 ## Loads and writes
 
