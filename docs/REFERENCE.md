@@ -342,7 +342,7 @@ Callbacks receive the row's columns as typed expressions (`Expr<T>`): a misspelt
 | | | |
 |---|---|---|
 | `fn.<name>(...args)`: every engine operation and scalar function, by its engine name (`fn.add`, `fn.add_checked`, `fn.div_float`, `fn.div_trunc`, `fn.lower_unicode`, `fn.round_half_even`, `fn.to_zone`, …), typed by the engine's result type | the operation itself | Prototype |
-| Comparisons: `.eq`, `.ne`, `.lt`, `.lte`, `.gt`, `.gte`, `.is`, `.isNot`, `.in([...])`, `.like(p)`, `.glob(p)` | `cmp_eq` … `cmp_ge`, `cmp_is`, `cmp_is_not`, `in_list`, `like`, `glob`; results are the engine's `bool` | Prototype |
+| Comparisons: `.eq`, `.ne`, `.lt`, `.lte`, `.gt`, `.gte`, `.is`, `.isNot`, `.in([...])`, `.like(p)`, `.glob(p)`; the other side may be nullable (a NOT NULL column compared with a nullable one) | `cmp_eq` … `cmp_ge`, `cmp_is`, `cmp_is_not`, `in_list`, `like`, `glob`; results are the engine's `bool` | Prototype |
 | Logic and NULLs: `.and`, `.or`, `.not()`, `and(...)`, `or(...)`, `not(x)`, `.isNull()`, `.isNotNull()`, `.orElse(v)` | the logic nodes, `isNull`, `coalesce` | Prototype |
 | `.collate(c)` | the collation a comparison compares text by | Prototype |
 | `lit(v)`, `col(name)` | a literal (a JavaScript boolean is a `bool`; a `Date` is a `date` or a `datetime`, whichever it is compared with), a column by name | Prototype |

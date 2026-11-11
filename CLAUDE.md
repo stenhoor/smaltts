@@ -27,7 +27,7 @@ copy here: lines and roles change, and a copy taken before the change is out of 
 | Command | What it does | When |
 |---|---|---|
 | `npm ci && npm run deps` | Installs dependencies, then the pinned smaltdb build in `packed.json` | First, and again after every `npm ci` or `npm install` |
-| `npm run check` | `npm test` (vitest; the reference's examples are stripped with smaltty and run) | Before every commit |
+| `npm run check` | `npm test` (vitest; the reference's examples are stripped with smaltty and run, and smaltty's checker checks the tests and examples: `test/checker.test.ts`) | Before every commit |
 | `npm run docs:dev` | The docs site (VitePress) with live reload; `npm run docs:build` fails on dead links | Docs changes |
 
 To try an unmerged smaltdb change: `node scripts/fetch-packed.mjs --local smaltdb=../smaltdb`.
