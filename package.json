@@ -44,7 +44,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
-    "smaltty": "github:stenhoor/smaltty#40db25b15329d3fa97eea869f44b04e15da0edd7",
+    "smaltty": "github:stenhoor/smaltty#78eb49eeb79bb1b039ef23cd1349c541bdb0d74b",
     "vitepress": "^1.6.4",
     "vitest": "^5.0.5"
   }
