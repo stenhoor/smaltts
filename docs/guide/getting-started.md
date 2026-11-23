@@ -1,6 +1,6 @@
 # Getting started
 
-::: warning Planned
+::: warning In early development
 smaltts is not on npm yet, and its API may change. The design and a prototype are in the
 [repository](https://github.com/stenhoor/smaltts); this page shows what the prototype does today. Try it, break it,
 tell us.
