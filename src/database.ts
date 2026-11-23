@@ -281,7 +281,7 @@ function rowsPlan(target: TableSpec<any>, rows: readonly Record<string, unknown>
 /** A row type as read with `{ temporal: 'text' }`: dates and times as the engine's text. */
 export type AsText<R> = { [K in keyof R]: R[K] extends Date ? string : R[K] extends Date | null ? string | null : R[K] };
 
-function explainTree(rows: readonly (readonly Value[])[], analyzed: boolean, plan: P.PlanOp): Explained {
+function explainTree(rows: readonly (readonly unknown[])[], analyzed: boolean, plan: P.PlanOp): Explained {
   const nodes = new Map<number, { node: ExplainNode & { children: ExplainNode[] }; parent: number }>();
   for (const r of rows) {
     const [id, parent] = [Number(r[0]), Number(r[1])];

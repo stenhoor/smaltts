@@ -9,7 +9,7 @@
  * `pick`, an aggregate's keys) is the view's own, and keeps its name. A reference is renamed only when it reads one of
  * the names its scope gets from the column, so a column of the same name in another table is never touched.
  */
-import type { ExprNode, RelNode } from './rel.js';
+import type { Amount, ExprNode, RelNode } from './rel.js';
 
 /** The names of a scope that come from the renamed column: lower-cased old name to new name. */
 type Names = ReadonlyMap<string, string>;
@@ -91,7 +91,7 @@ function edit(n: RelNode, ctx: Ctx): { node: RelNode; out: Names } {
     return go(e);
   };
   const fields = (fs: readonly (readonly [string, ExprNode])[], scope: Names) => fs.map(([k, v]) => [k, ex(v, [scope])] as const);
-  const amount = <A>(a: A): A => (a && typeof a === 'object' ? (ex(a as ExprNode, []) as A) : a);
+  const amount = (a: Amount): Amount => (typeof a === 'object' ? ex(a, []) : a);
 
   switch (n.r) {
     case 'scan':
