@@ -116,8 +116,7 @@ group('plans: relations, loads, views, explain', () => {
       .aggregate((r) => ({ name: r.c_name }), (r) => ({ spent: agg.sum(r.total), orders: agg.count(), avg: agg.avg(r.total) }))
       .sort('-spent');
     const rows = await db.rows(spend, { min: 1 });
-    // @ts-ignore agg.count() is typed nullable: stenhoor/smaltts#29 (remove when it is fixed)
-    const first: { name: string | null; spent: number | null; orders: number } = rows[0]!;
+    const first: { name: string | null; spent: number | null; orders: number | null } = rows[0]!;
     expect(first).toEqual({ name: 'Ada', spent: 40, orders: 2, avg: 20 });
     expect(rows).toHaveLength(2);
   });
@@ -185,7 +184,6 @@ group('plans: relations, loads, views, explain', () => {
   test("an engine error names the smaltts call it came from (origin)", async () => {
     const db = await fresh();
     await db.load(orders, [{ customerId: 1, total: 10 }]);
-    // @ts-ignore integer arguments take no bigint yet: stenhoor/smaltts#29 (remove when it is fixed)
     const overflow = scan(orders).select((o) => ({ n: fn.add_checked(o.customerId, 9223372036854775807n) }));
     const error = await db.rows(overflow).then(() => null, (e: unknown) => e as { origin?: unknown });
     expect(error?.origin).toEqual({ smaltts: 'fn.add_checked' });

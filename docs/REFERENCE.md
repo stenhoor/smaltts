@@ -373,6 +373,17 @@ times is a duration. Other functions are typed loosely, with the engine's result
 at once. Compiling checks every call's argument count against the engine's catalog and names the call
 (`fn.add: takes 2 arguments, not 3`).
 
+**Nullability follows the arguments** (the owner, smaltts#29). An operation called through `fn` gives a non-null
+result when all its arguments are non-null: `fn.add(r.n, 1)` on a NOT NULL `n` is a `number`, and `fn.cmp_lt(r.n, 5)` a
+`boolean`; with a nullable argument the result is nullable too. The exceptions are `fn.div_trunc` and `fn.mod_trunc`,
+which are NULL on division by zero. The comparison methods (`.eq` … `.gte`, `.in`, `.like`, `.glob`) give a nullable
+`boolean` for now: typing them by their arguments needs overloads, which smaltty's checker doesn't check yet, and with
+one signature it checks their arguments in the smalt apps. Aggregates are nullable, `agg.count()` included, and so are
+the functions typed loosely.
+
+**Numbers take a `bigint`.** An argument typed as a number also takes a `bigint`, as `Value` does, for integers beyond
+2^53: `fn.add_checked(o.id, 9223372036854775807n)`.
+
 **Aliases only where an operation has one meaning** (ADR 0023, owner's decision 15). Arithmetic (`fn.add` or
 `fn.add_checked`), division (`fn.div_float`, `fn.div_trunc`, `fn.div_floor`), case (`fn.lower` or `fn.lower_unicode`)
 and concatenation (`fn.text_concat` or `fn.concat`) have more than one, so they are called by their engine names.

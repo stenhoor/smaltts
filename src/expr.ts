@@ -38,7 +38,9 @@ export type ExprNode =
 
 /** The TypeScript type of an engine plan type's values (`null` aside), as smaltts reads them (`date`, `datetime`: `Date`). */
 export type TsOf<T extends string> = T extends 'int' | 'real' | 'num' ? number : T extends 'date' | 'datetime' ? Date : T extends 'text' | 'time' | 'duration' ? string : T extends 'bool' ? boolean : T extends 'blob' ? Uint8Array : Value | boolean;
-export type Arg<T> = Expr<T> | T;
+/** A literal argument of `T`: one typed as a number also takes a `bigint`, as `Value` does (the owner, smaltts#29). */
+export type Literal<T> = T | (T extends number ? bigint : never);
+export type Arg<T> = Expr<T> | Literal<T>;
 export type Truth = boolean | number | null;
 
 /** A typed expression over named columns. `T` is the TypeScript type of its values (with `null` when nullable). */
