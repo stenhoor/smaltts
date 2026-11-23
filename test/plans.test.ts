@@ -273,7 +273,6 @@ group('subqueries', () => {
 group('iterate and CASE', () => {
   test('iterate: the initial rows, then each step over the previous one', async () => {
     const start = values<{ n: number }>([{ name: 'n', type: 'INTEGER' }], [{ n: 1 }]);
-    // @ts-ignore iterate's step is typed nullable (fn.add): stenhoor/smaltts#29 (remove when it is fixed)
     const rel = iterate(start, (prev) => prev.filter((r) => r.n.lt(5)).select((r) => ({ n: fn.add(r.n, 1) })));
     const c = await db.compile(rel);
     const addType = c.fields[0]!.type;
@@ -284,7 +283,6 @@ group('iterate and CASE', () => {
 
   test('iterate distinct ends a cycle', async () => {
     const start = values<{ n: number }>([{ name: 'n', type: 'INTEGER' }], [{ n: 1 }]);
-    // @ts-ignore iterate's step is typed nullable (fn.sub): stenhoor/smaltts#29 (remove when it is fixed)
     const rel = iterate(start, (prev) => prev.select((r) => ({ n: fn.sub(3, r.n) })), { distinct: true });
     expect((await db.rows(rel)).map((r) => r.n)).toEqual([1, 2]);
   });
