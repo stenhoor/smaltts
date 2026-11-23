@@ -324,4 +324,11 @@ group('the common pipelines compile to the raw plan, node for node', () => {
     await expect(db.compile(scan(t).select((r) => ({ v: (fn.add as (...a: unknown[]) => never)(r.x, 1, 2) })))).rejects.toThrow(/^fn.add: takes 2 arguments, not 3/);
     await expect(db.compile(scan(t).aggregate(() => ({}), (r) => ({ v: agg.sum(r.x, r.y) })))).rejects.toThrow(/^aggregate: agg.sum: takes 1 argument, not 2/);
   });
+
+  test('max and min are a scalar function and an aggregate, each with its own argument count', async () => {
+    const rows = await db.rows(scan(t).filter((r) => r.id.in([1, 3, 5])).select((r) => ({ id: r.id, hi: fn.max(r.x, r.y), lo: fn.min(r.x, r.y) })).sort('id'));
+    expect(rows).toEqual([{ id: 1, hi: 10, lo: 1.5 }, { id: 3, hi: 30, lo: 2.5 }, { id: 5, hi: 50, lo: 4.5 }]);
+    await expect(db.compile(scan(t).select((r) => ({ v: (fn.max as (...a: unknown[]) => never)(r.x) })))).rejects.toThrow(/^fn.max: takes at least 2 arguments, not 1/);
+    await expect(db.compile(scan(t).aggregate(() => ({}), (r) => ({ v: (agg.max as (...a: unknown[]) => never)(r.x, r.y) })))).rejects.toThrow(/^aggregate: agg.max: takes 1 argument, not 2/);
+  });
 });

@@ -1,7 +1,7 @@
 /** The generated function table (src/functions.ts) is the engine's: names, kinds and result types. */
 import { Database } from 'smaltdb/engine';
 import { expect, test } from 'vitest';
-import { AGGREGATE, ARITY, OPERATIONS, SCALAR } from '../src/functions.js';
+import { AGGREGATE, AGGREGATE_ARITY, ARITY, OPERATIONS, SCALAR } from '../src/functions.js';
 import { SIGNED } from '../src/signatures.js';
 
 test('fn and agg list exactly the engine catalog functions', () => {
@@ -15,7 +15,9 @@ test('fn and agg list exactly the engine catalog functions', () => {
 
 test('the argument counts and the operations are the catalog\'s', () => {
   const fns = Database.openMemory().catalog.functions();
-  expect(ARITY).toEqual(Object.fromEntries(fns.map((f) => [f.name, [f.minArgs, f.maxArgs]])));
+  // Each table holds one kind, so a name that is both a scalar function and an aggregate (max, min) keeps both counts.
+  expect(ARITY).toEqual(Object.fromEntries(fns.filter((f) => f.kind === 'scalar').map((f) => [f.name, [f.minArgs, f.maxArgs]])));
+  expect(AGGREGATE_ARITY).toEqual(Object.fromEntries(fns.filter((f) => f.kind !== 'scalar').map((f) => [f.name, [f.minArgs, f.maxArgs]])));
   expect([...OPERATIONS].sort()).toEqual(fns.filter((f) => f.operation).map((f) => f.name).sort());
 });
 

@@ -25,9 +25,17 @@ export const AGGREGATE = {
 ${aggregate.map((f) => `  ${key(f.name)}: { kind: '${f.kind}', result: '${f.result}' },`).join('\n')}
 } as const;
 
-/** How many arguments each function takes: [fewest, most], most \`null\` for any number. */
+/**
+ * How many arguments each scalar function and operation (\`fn.<name>\`) takes: [fewest, most], most \`null\` for any
+ * number. Aggregates have their own table, as a name can be both (\`max\`, \`min\`).
+ */
 export const ARITY: { readonly [name: string]: readonly [number, number | null] } = {
-${fns.map((f) => `  ${key(f.name)}: [${f.minArgs}, ${f.maxArgs ?? 'null'}],`).join('\n')}
+${scalar.map((f) => `  ${key(f.name)}: [${f.minArgs}, ${f.maxArgs ?? 'null'}],`).join('\n')}
+};
+
+/** How many arguments each aggregate and window function (\`agg.<name>\`) takes, as {@link ARITY} does for \`fn\`. */
+export const AGGREGATE_ARITY: { readonly [name: string]: readonly [number, number | null] } = {
+${aggregate.map((f) => `  ${key(f.name)}: [${f.minArgs}, ${f.maxArgs ?? 'null'}],`).join('\n')}
 };
 
 /** The engine's own operations (ADR 0016 section 1), as opposed to named functions: src/signatures.ts types each. */
