@@ -11,12 +11,13 @@
 
 [Documentation](https://stenhoor.github.io/smaltts/) · [smaltworks.dev](https://smaltworks.dev/products/smaltts)
 
-smaltts will be a thin, typed TypeScript API for [smaltdb](https://smaltdb.dev), for applications and tools that want
+smaltts is a thin, typed TypeScript API for [smaltdb](https://smaltdb.dev), for applications and tools that want
 to work with the engine directly, without a query language or dataframes in between. It sits at the language layer,
 beside [smaltql](https://stenhoor.github.io/smaltql/) (SQL) and [smaltdf](https://stenhoor.github.io/smaltdf/)
 (dataframes), and builds plans for the same engine.
 
-**Status:** planned. There is no code yet.
+**Status:** in early development: not on npm yet, and its API may change. The
+[status page](https://stenhoor.github.io/smaltts/guide/status) says what is in.
 
 <a href="https://smaltworks.dev"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/stenhoor/smalt-brand/main/badges/a-smaltworks-project-on-dark.svg"><img alt="A smaltworks project" src="https://raw.githubusercontent.com/stenhoor/smalt-brand/main/badges/a-smaltworks-project.svg" height="28"></picture></a>
 
