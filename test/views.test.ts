@@ -237,7 +237,7 @@ group('change sets: what a table change does to the views reading it', () => {
 
     test(`${kind.name}: a dropped column it gives is an error`, async () => {
       const db = await withView(kind);
-      const changes = await db.diff({ tables: [dropped, u] }, { allowDataLoss: 'certain' });
+      const changes = await db.diff({ tables: [dropped, u] });
       expect(entries(changes).diagnostics).toEqual(['error']);
       expect(changes.diagnostics.find((d) => d.object === 'v')?.message).toMatch(/^the change set breaks this view/);
       await expect(db.apply(changes, { allowDataLoss: 'certain' })).rejects.toThrow(/the change set has errors: v: the change set breaks this view/);
@@ -254,7 +254,7 @@ group('change sets: what a table change does to the views reading it', () => {
     await add.apply(await add.diff({ tables: [added, u] }));
     expect(await columnsOf(add, 'v')).toEqual(['id', 'g', 'x', 'y']);
     const drop = await grandfathered('v', scan(t));
-    const d = await drop.diff({ tables: [dropped, u] }, { allowDataLoss: 'certain' });
+    const d = await drop.diff({ tables: [dropped, u] });
     expect(entries(d)).toEqual({ steps: [], diagnostics: ['info'] });
     await drop.apply(d, { allowDataLoss: 'certain' });
     expect(await columnsOf(drop, 'v')).toEqual(['id', 'g']);
@@ -263,7 +263,7 @@ group('change sets: what a table change does to the views reading it', () => {
   test(`a dropped column a view names is an error`, async () => {
     const db = await fresh();
     await db.createView('v', scan(t).pick('id', 'x'));
-    const changes = await db.diff({ tables: [dropped, u] }, { allowDataLoss: 'certain' });
+    const changes = await db.diff({ tables: [dropped, u] });
     expect(entries(changes)).toEqual({ steps: [], diagnostics: ['error'] });
   });
 
@@ -271,7 +271,7 @@ group('change sets: what a table change does to the views reading it', () => {
     const db = await fresh();
     await db.createView('v', scan(t).pick('id', 'g'));
     const want = table('t', { id: int().primaryKey(), grp: text().notNull().renamedFrom('g'), x: int() });
-    const changes = await db.diff({ tables: [want, u] }, { allowDataLoss: 'possible' });
+    const changes = await db.diff({ tables: [want, u] });
     expect(changes.steps.map((s) => `${s.action} ${s.object}`)).toEqual(['rebuildTable t', 'replaceView v']);
     expect(changes.steps[1]!.reason).toBe('it reads a column a rebuild renames');
     await db.apply(changes, { allowDataLoss: 'possible' });
@@ -281,9 +281,9 @@ group('change sets: what a table change does to the views reading it', () => {
   test("an interface's type change: lossless to its type is converted by the engine, otherwise an error", async () => {
     const db = await fresh();
     await db.createView('v', scan(t), { columns: ['id', 'x'] });
-    const toBool = await db.diff({ tables: [table('t', { id: int().primaryKey(), g: text(), x: bool() }), u] }, { allowDataLoss: 'possible' });
+    const toBool = await db.diff({ tables: [table('t', { id: int().primaryKey(), g: text(), x: bool() }), u] });
     expect(toBool.diagnostics.filter((d) => d.object === 'v.x').map((d) => `${d.level}: ${d.message}`)).toEqual(["info: the column becomes bool: the engine converts it to the interface's int"]);
-    const toText = await db.diff({ tables: [table('t', { id: int().primaryKey(), g: text(), x: text() }), u] }, { allowDataLoss: 'possible' });
+    const toText = await db.diff({ tables: [table('t', { id: int().primaryKey(), g: text(), x: text() }), u] });
     expect(toText.diagnostics.filter((d) => d.object === 'v.x').map((d) => `${d.level}: ${d.message}`)).toEqual([
       "error: the interface's column becomes text, which doesn't convert losslessly to its int: change the view in the same change set",
     ]);

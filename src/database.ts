@@ -9,7 +9,7 @@ import { type Catalog, readCatalog } from './catalog.js';
 import { type Applied, type ApplyPolicy, type ChangeSet, type DiffOptions, apply, diff } from './changes.js';
 import { type Migrated, type NamedFile, migrateFiles } from './files.js';
 import { LANGUAGE, type ViewSource } from './source.js';
-import { type Cols, type Compiled, Expr, type Field, Rel, compileRel, expr } from './rel.js';
+import { type Cols, type Compiled, Expr, type Field, Rel, type Truth, compileRel, expr } from './rel.js';
 import { toIndexDef, toTableDef } from './ddl.js';
 import type { PluginCalls, PluginDescriptor, PluginMethods } from './plugins.js';
 import { type SchemaSpec, type TableSpec, type Value, columnIndex, columnPlanType } from './spec.js';
@@ -207,18 +207,18 @@ export class SmaltDb {
     return { rows };
   }
   /** Delete the rows of a table where `pred` is true. */
-  async deleteWhere<Row extends Record<string, unknown>>(table: TableSpec<Row>, pred: (r: Cols<Row>) => Expr<number | null>): Promise<void> {
+  async deleteWhere<Row extends Record<string, unknown>>(table: TableSpec<Row>, pred: (r: Cols<Row>) => Expr<Truth>): Promise<void> {
     const { input } = await this.targetRows(table, pred);
     await this.backend.run({ kind: 'write', plan: P.remove(table.name, input, 0) });
   }
   /** Set columns of the rows of a table where `pred` is true. */
-  async updateWhere<Row extends Record<string, unknown>>(table: TableSpec<Row>, set: (r: Cols<Row>) => Partial<{ [K in keyof Row]: Expr<Row[K]> | Row[K] }>, pred: (r: Cols<Row>) => Expr<number | null>): Promise<void> {
+  async updateWhere<Row extends Record<string, unknown>>(table: TableSpec<Row>, set: (r: Cols<Row>) => Partial<{ [K in keyof Row]: Expr<Row[K]> | Row[K] }>, pred: (r: Cols<Row>) => Expr<Truth>): Promise<void> {
     const { input, fields, spec } = await this.targetRows(table, pred);
     const proxy = new Proxy({}, { get: (_, n) => (typeof n === 'string' ? new Expr({ k: 'col', name: n }) : undefined) }) as Cols<Row>;
     const sets = Object.entries(set(proxy)).map(([name, v]) => ({ column: columnIndex(spec, name), value: expr(v instanceof Expr ? v.node : { k: 'lit', value: v as Value }, [fields], []).e }));
     await this.backend.run({ kind: 'write', plan: P.update(table.name, input, 0, sets) });
   }
-  private async targetRows(table: TableSpec<any>, pred: (r: any) => Expr<number | null>) {
+  private async targetRows(table: TableSpec<any>, pred: (r: any) => Expr<Truth>) {
     const catalog = await this.catalog();
     const spec = catalog.table(table.name) ?? table;
     // The rowid first, then the table's columns.

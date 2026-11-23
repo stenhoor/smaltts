@@ -27,7 +27,9 @@ copy here: lines and roles change, and a copy taken before the change is out of 
 | Command | What it does | When |
 |---|---|---|
 | `npm ci && npm run deps` | Installs dependencies, then the pinned smaltdb build in `packed.json` | First, and again after every `npm ci` or `npm install` |
-| `npm run check` | `npm test` (vitest; the reference's examples are stripped with smaltty and run, and smaltty's checker checks the tests and examples: `test/checker.test.ts`) | Before every commit |
+| `npm run check` | `npm run typecheck`, then `npm test` (vitest; the reference's examples are stripped with smaltty and run, and smaltty's checker checks the tests and examples: `test/checker.test.ts`) | Before every commit |
+| `npm run typecheck` | TypeScript 7 over `src/` and `test/`, against smaltdb's source (the `paths` in `tsconfig.json`) | Part of `check`; CI runs it |
+| `npm run build` | `dist/` and its declarations, by TypeScript 6.0.3 against smaltdb's published types (`tsconfig.build.json`): what a pin in another repository's `packed.json` installs | Packaging checks; CI runs it |
 | `npm run docs:dev` | The docs site (VitePress) with live reload; `npm run docs:build` fails on dead links | Docs changes |
 
 To try an unmerged smaltdb change: `node scripts/fetch-packed.mjs --local smaltdb=../smaltdb`.
@@ -63,10 +65,14 @@ To try an unmerged smaltdb change: `node scripts/fetch-packed.mjs --local smaltd
 - **The API reference is the specification** (`docs/REFERENCE.md`): a change to the API changes it in the same PR.
   Its TypeScript examples are stripped with smaltty and run by `test/reference.test.ts`; mark an example of API that
   is not built yet with `<!-- spec:planned -->` on the line before it.
-- **TypeScript tooling is smaltty's** (owner's decision, 2026-11-10): no `typescript` dependency. smaltts uses smaltty,
-  and extends it, for parsing, stripping and checking; static checks return with smaltty's checker. Development and
-  test tools allowed without asking: other smaltworks packages, Node's types and vitest (and VitePress for the site);
-  none of them in deployed code.
+- **TypeScript follows the family's standard** (the owner, 2026-11-23, smaltworks DECISIONS.md, "smaltts follows the
+  family's TypeScript standard"; it replaces the rule of 2026-11-10 that smaltts takes no `typescript` dependency):
+  `npm run typecheck` runs TypeScript 7 (`typescript7`) over `src/` and `test/`, and `npm run build` emits `dist/` and
+  its declarations with TypeScript 6.0.3 (`typescript`). smaltts still uses smaltty, and extends it, where it does:
+  stripping the reference's examples and `test/erasable.test.ts`, and its checker in `test/checker.test.ts`, where a
+  `// @ts-expect-error` is a compile-time test smaltty must find. Development and test tools allowed without asking:
+  other smaltworks packages, TypeScript, Node's types and vitest (and VitePress for the site); none of them in deployed
+  code.
 - **The site** (`docs/`, deployed to GitHub Pages from `main` by `.github/workflows/docs.yml`) uses smalt-brand's
   VitePress theme, copied unchanged into `docs/.vitepress/theme/`, and its badges and logos in `docs/public/`.
 
