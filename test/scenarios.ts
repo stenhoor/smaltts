@@ -73,7 +73,7 @@ export const scenarios: readonly Scenario[] = [
       await seeded(db);
       await db.createView('v', scan(orders).pick('id', 'paid'));
       const dropped = table('orders', { id: int().primaryKey(), customer: text().notNull(), total: real(), day: date(), tags: list(text()) });
-      const changes = await db.diff({ tables: [dropped, customers] }, { allowDataLoss: 'certain' });
+      const changes = await db.diff({ tables: [dropped, customers] });
       return changes.diagnostics.filter((d) => d.level === 'error').map((d) => d.object);
     },
   },

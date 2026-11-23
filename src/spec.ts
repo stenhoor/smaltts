@@ -7,7 +7,7 @@
  * and specs written in code are the same objects; only the second carries a row type.
  */
 import type * as plan from 'smaltdb/plan';
-import { type Cols, type ExprNode, type Truth, Expr } from './expr.js';
+import { type Cols, type ExprNode, type Truth, type TsOf, Expr } from './expr.js';
 
 /** How the engine stores a column's values (smaltdb tables are strict). */
 export type StorageType = 'INTEGER' | 'REAL' | 'TEXT' | 'BLOB' | 'NUMERIC' | 'ANY' | 'BOOLEAN' | 'DATE' | 'DATETIME' | 'TIME' | 'DURATION' | 'LIST' | 'STRUCT';
@@ -150,8 +150,12 @@ export class ColumnBuilder<T, N extends boolean = true, D extends boolean = fals
   renamedFrom(previous: string): ColumnBuilder<T, N, D> {
     return new ColumnBuilder({ ...this.spec, renamedFrom: previous }, this.flags);
   }
-  /** A computed default: an expression over no columns, evaluated for each row written (`fn.random()`). */
-  defaultExpr(expr: Expr<T | null>): ColumnBuilder<T, N, true> {
+  /**
+   * A computed default: an expression over no columns, evaluated for each row written (`fn.random()`). It may be of the
+   * column's type, or of the engine's `any` (a function whose result type the engine decides when it runs, such as
+   * `fn.abs`), as the engine itself takes either.
+   */
+  defaultExpr(expr: Expr<T | null> | Expr<TsOf<'any'>>): ColumnBuilder<T, N, true> {
     const { default: _constant, ...rest } = this.spec;
     return new ColumnBuilder({ ...rest, defaultExpr: expr.node }, this.flags);
   }
